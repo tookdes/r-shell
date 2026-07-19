@@ -18,6 +18,9 @@ mod tests {
             auth_method: AuthMethod::Password {
                 password: TEST_PASSWORD.to_string(),
             },
+            connection_timeout_secs: Some(30),
+            keepalive_interval_secs: Some(60),
+            verify_host_key: false,
         }
     }
 

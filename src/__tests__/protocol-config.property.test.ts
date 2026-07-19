@@ -70,11 +70,11 @@ describe('protocol-config property tests', () => {
       );
     });
 
-    it('SSH supports password, publickey, keyboard-interactive', () => {
+    it('SSH supports password and publickey', () => {
       const methods = getAuthMethods('SSH');
       expect(methods).toContain('password');
       expect(methods).toContain('publickey');
-      expect(methods).toContain('keyboard-interactive');
+      expect(methods).not.toContain('keyboard-interactive');
     });
 
     it('SFTP supports password and publickey (no keyboard-interactive)', () => {

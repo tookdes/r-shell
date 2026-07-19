@@ -29,6 +29,7 @@ export function StatusBar({ activeConnection }: StatusBarProps) {
               <span className={activeConnection.status === 'disconnected' ? 'text-muted-foreground' : ''}>
                 {activeConnection.status === 'connected' ? t('statusBar.connected') :
                  activeConnection.status === 'connecting' ? t('statusBar.connecting') :
+                 activeConnection.status === 'pending' ? t('statusBar.pending') :
                  t('statusBar.disconnected')}
               </span>
               <span className="text-muted-foreground ml-1">{activeConnection.name}</span>

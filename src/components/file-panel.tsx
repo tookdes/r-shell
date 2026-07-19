@@ -423,6 +423,8 @@ export const FilePanel = forwardRef<FilePanelRef, FilePanelProps>(
         })),
       });
       e.dataTransfer.setData(DRAG_MIME, payload);
+      // text/plain keeps WebKit (macOS WKWebView) from aborting empty-looking drags
+      e.dataTransfer.setData("text/plain", selected.map((file) => file.name).join("\n"));
       e.dataTransfer.effectAllowed = "copy";
     };
 
@@ -502,7 +504,7 @@ export const FilePanel = forwardRef<FilePanelRef, FilePanelProps>(
       mode === "local" ? "border-blue-500" : "border-emerald-500";
     const borderClass = isActive
       ? `border-2 ${activeBorderColor}`
-      : "border border-border";
+      : "border-0";
     const selectedBg =
       mode === "local"
         ? "bg-blue-500/20 dark:bg-blue-400/20"

@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { exit } from '@tauri-apps/plugin-process';
+import { invoke } from '@tauri-apps/api/core';
 import { Button } from './ui/button';
 import { Separator } from './ui/separator';
 import { 
@@ -111,6 +113,43 @@ export function MenuBar({
 }: MenuBarProps) {
   const { t } = useTranslation();
   const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+  const handleExitApp = useCallback(async () => {
+    try {
+      await invoke('ssh_disconnect_all');
+    } catch {
+      // Best-effort cleanup; still exit even if disconnect fails.
+    }
+    try {
+      await exit(0);
+    } catch (error) {
+      console.error('Failed to exit process, falling back to window.close():', error);
+      try {
+        await getCurrentWindow().close();
+      } catch (closeError) {
+        console.error('Failed to close window:', closeError);
+      }
+    }
+  }, []);
+
+  // Ctrl/Cmd+Q should always quit, even when the terminal is focused.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      if (event.repeat || event.isComposing || event.keyCode === 229) return;
+      const key = event.key.toLowerCase();
+      if (key !== 'q') return;
+      const isMac = navigator.platform.toUpperCase().includes('MAC');
+      const mod = isMac ? event.metaKey : event.ctrlKey;
+      if (!mod || event.shiftKey || event.altKey) return;
+      // On Mac Cmd+Q is usually handled by the native menu; still wire for Windows Ctrl+Q.
+      event.preventDefault();
+      event.stopPropagation();
+      void handleExitApp();
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [handleExitApp]);
+
   const cmdOrCtrl = isMac ? '⌘' : 'Ctrl';
 
   // Load recent connections
@@ -197,7 +236,7 @@ export function MenuBar({
             {t('menuBar.saveConnection')}
             <DropdownMenuShortcut>{cmdOrCtrl}+S</DropdownMenuShortcut>
           </DropdownMenuItem>
-          <DropdownMenuItem disabled={!hasActiveConnection}>
+          <DropdownMenuItem disabled title={t('menuBar.notImplementedYet')}>
             <Save className="mr-2 h-4 w-4" />
             {t('menuBar.saveConnectionAs')}
             <DropdownMenuShortcut>{cmdOrCtrl}+Shift+S</DropdownMenuShortcut>
@@ -208,7 +247,7 @@ export function MenuBar({
             {t('menuBar.closeConnection')}
             <DropdownMenuShortcut>{closeConnectionShortcutLabel ?? `${cmdOrCtrl}+Shift+W`}</DropdownMenuShortcut>
           </DropdownMenuItem>
-          <DropdownMenuItem>
+          <DropdownMenuItem onClick={() => { void handleExitApp(); }}>
             <X className="mr-2 h-4 w-4" />
             {t('menuBar.exit')}
             <DropdownMenuShortcut>{cmdOrCtrl}+Q</DropdownMenuShortcut>
@@ -259,7 +298,12 @@ export function MenuBar({
             <DropdownMenuShortcut>Shift+F3</DropdownMenuShortcut>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem disabled={!hasActiveConnection}>
+          <DropdownMenuItem
+            disabled={!hasActiveConnection}
+            onClick={() => {
+              window.dispatchEvent(new Event('r-shell:clear-active-terminal'));
+            }}
+          >
             <RefreshCw className="mr-2 h-4 w-4" />
             {t('menuBar.clearScreen')}
             <DropdownMenuShortcut>{cmdOrCtrl}+L</DropdownMenuShortcut>

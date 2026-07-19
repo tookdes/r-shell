@@ -18,6 +18,19 @@ pub struct ConnectRequest {
     pub password: Option<String>,
     pub key_path: Option<String>,
     pub passphrase: Option<String>,
+    /// TCP/SSH handshake timeout in seconds (from app settings).
+    #[serde(default)]
+    pub connection_timeout_secs: Option<u64>,
+    /// SSH keepalive interval in seconds (from app settings). 0 disables.
+    #[serde(default)]
+    pub keepalive_interval_secs: Option<u64>,
+    /// TOFU known_hosts verification. Defaults to true when omitted.
+    #[serde(default = "default_true")]
+    pub verify_host_key: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -74,6 +87,9 @@ pub async fn ssh_connect(
         port: request.port,
         username: request.username,
         auth_method,
+        connection_timeout_secs: request.connection_timeout_secs,
+        keepalive_interval_secs: request.keepalive_interval_secs,
+        verify_host_key: request.verify_host_key,
     };
 
     match state
@@ -130,6 +146,18 @@ pub async fn ssh_disconnect(
             error: Some(e.to_string()),
         }),
     }
+}
+
+#[tauri::command]
+pub async fn ssh_disconnect_all(
+    state: State<'_, Arc<ConnectionManager>>,
+) -> Result<CommandResponse, String> {
+    state.close_all_connections().await;
+    Ok(CommandResponse {
+        success: true,
+        output: Some("All connections closed".to_string()),
+        error: None,
+    })
 }
 
 #[tauri::command]
@@ -568,7 +596,7 @@ pub async fn read_file_content(
         .ok_or("Connection not found")?;
 
     let client = connection.read().await;
-    let command = format!("cat '{}'", path);
+    let command = format!("cat '{}'", shell_escape_single_quoted(&path));
 
     match client.execute_command(&command).await {
         Ok(output) => Ok(output),
@@ -600,7 +628,8 @@ pub async fn read_remote_file_base64(
     let client = connection.read().await;
 
     // Refuse very large files to avoid memory / performance issues
-    let size_cmd = format!("stat -c '%s' '{}' 2>/dev/null || stat -f '%z' '{}'", path, path);
+    let escaped_path = shell_escape_single_quoted(&path);
+    let size_cmd = format!("stat -c '%s' '{}' 2>/dev/null || stat -f '%z' '{}'", escaped_path, escaped_path);
     let size_str = client
         .execute_command(&size_cmd)
         .await
@@ -620,7 +649,7 @@ pub async fn read_remote_file_base64(
     // so we pipe through `tr -d '\n'` as a portable fallback.
     let b64_cmd = format!(
         "base64 -w0 '{}' 2>/dev/null || base64 '{}' | tr -d '\\n'",
-        path, path
+        escaped_path, escaped_path
     );
     let b64_data = client
         .execute_command(&b64_cmd)
@@ -666,7 +695,7 @@ pub async fn copy_file(
         .ok_or("Connection not found")?;
 
     let client = connection.read().await;
-    let command = format!("cp -r '{}' '{}'", source_path, dest_path);
+    let command = format!("cp -r '{}' '{}'", shell_escape_single_quoted(&source_path), shell_escape_single_quoted(&dest_path));
 
     match client.execute_command(&command).await {
         Ok(_) => Ok(true),
@@ -2102,6 +2131,12 @@ pub struct SftpConnectRequest {
     pub password: Option<String>,
     pub key_path: Option<String>,
     pub passphrase: Option<String>,
+    #[serde(default)]
+    pub connection_timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub keepalive_interval_secs: Option<u64>,
+    #[serde(default = "default_true")]
+    pub verify_host_key: bool,
 }
 
 #[tauri::command]
@@ -2125,6 +2160,9 @@ pub async fn sftp_connect(
         port: request.port,
         username: request.username,
         auth_method: auth,
+        connection_timeout_secs: request.connection_timeout_secs,
+        keepalive_interval_secs: request.keepalive_interval_secs,
+        verify_host_key: request.verify_host_key,
     };
 
     match state

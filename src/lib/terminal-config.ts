@@ -383,9 +383,12 @@ export function loadAppearanceSettings(): TerminalAppearanceSettings {
   return defaultAppearanceSettings;
 }
 
+export const APPEARANCE_SETTINGS_CHANGED_EVENT = 'r-shell:appearance-settings-changed';
+
 export function saveAppearanceSettings(settings: TerminalAppearanceSettings): void {
   try {
     localStorage.setItem('terminalAppearance', JSON.stringify(normalizeAppearanceSettings(settings)));
+    window.dispatchEvent(new Event(APPEARANCE_SETTINGS_CHANGED_EVENT));
   } catch (e) {
     console.error('Failed to save terminal appearance settings:', e);
   }

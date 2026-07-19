@@ -75,7 +75,16 @@
     "systemMonitor": "System Monitor",
     "logMonitor": "Log Monitor",
     "quickConnected": "Quick Connected",
-    "quickConnectedDesc": "Connected to {{name}}"
+    "quickConnectedDesc": "Connected to {{name}}",
+    "workspaceRestore": "Workspace Restore",
+    "bringingConnectionsOnline": "Bringing your connections back online",
+    "preparingSavedConnections": "Preparing saved connections",
+    "reconnectingNamed": "Reconnecting {{name}}",
+    "restoreHighlightCredentials": "Credentials stay on this device",
+    "restoreHighlightAutoReconnect": "Auto reconnect with retry",
+    "restoreHighlightMonitoring": "Live status monitoring",
+    "unknownHost": "unknown host",
+    "restoreCancelled": "Session restore cancelled"
   },
   "connectionDialog": {
     "title": {
@@ -278,11 +287,13 @@
       "title": "Security Settings",
       "desc": "Configure security options and authentication settings.",
       "hostKeyVerification": "Host Key Verification",
-      "hostKeyVerificationDesc": "Verify SSH host keys for enhanced security",
+      "hostKeyVerificationNotImplemented": "Not implemented yet — all server keys are currently accepted.",
+      "hostKeyVerificationDesc": "Trust new host keys on first connect (TOFU). Changed keys are rejected until you clear the known_hosts entry.",
       "savePasswords": "Save Passwords",
       "savePasswordsDesc": "Store passwords locally (encrypted)",
       "autoLockTimeout": "Auto Lock Timeout: {{timeout}} minutes",
-      "autoLockTimeoutDesc": "Automatically lock the application after this period of inactivity"
+      "autoLockTimeoutDesc": "Automatically lock the application after this period of inactivity",
+      "autoLockTimeoutNotImplemented": "Not implemented yet — auto-lock is currently unavailable."
     },
     "interface": {
       "title": "Interface Settings",
@@ -457,7 +468,8 @@
     "toggleMonitorPanel": "Toggle Monitor Panel",
     "toggleZenMode": "Toggle Zen Mode",
     "closeTab": "Close Tab",
-    "window": "Window"
+    "window": "Window",
+    "notImplementedYet": "Not implemented yet"
   },
   "toolbar": {
     "newConnection": "New Connection",
@@ -579,7 +591,7 @@
       "syncDirectories": "Sync directories (Ctrl+Shift+S)"
     },
     "selected": "{{count}} selected",
-    "loading": "Loading\u2026",
+    "loading": "Loading…",
     "downloadSelected": "Download {{count}} Selected",
     "deleteFolderTitle": "Delete Folder?",
     "deleteFileTitle": "Delete File?",
@@ -760,17 +772,22 @@
     "cannotMoveIntoOwn": "Cannot move folder into its own subfolder",
     "movedConnection": "Moved \"{{source}}\" to \"{{target}}\"",
     "failedToMoveConnection": "Failed to move connection",
+    "reorderedConnection": "Reordered \"{{name}}\"",
+    "sortByName": "Sort by name",
+    "sortedFolderByName": "Sorted \"{{name}}\" by name",
+    "failedToSortFolder": "Failed to sort folder",
     "movedFolder": "Moved folder \"{{source}}\" to \"{{target}}\"",
     "failedToMoveFolder": "Failed to Move Folder",
     "unableToMoveFolder": "Unable to move folder to new location.",
     "noConnectionsYet": "No connections yet",
     "connectionDetails": "Connection Details",
+    "dragToMove": "Drag to move or reorder",
     "noConnectionSelected": "No connection selected"
   },
   "filePanel": {
     "selectDirectory": "Select a directory to view its contents",
     "noFiles": "No files found",
-    "loading": "Loading...",
+    "loading": "Loading…",
     "dropFilesHint": "Drop files here to upload",
     "items": "{{count}} item(s)",
     "itemsSelected_one": "{{count}} item selected",
@@ -790,7 +807,6 @@
       "noMatches": "No matches",
       "emptyDirectory": "Empty directory"
     },
-    "loading": "Loading…",
     "column": {
       "name": "Name",
       "size": "Size",
@@ -870,6 +886,7 @@
     }
   },
   "statusBar": {
+    "pending": "Pending",
     "connected": "Connected",
     "disconnected": "Disconnected",
     "connecting": "Connecting...",
@@ -977,7 +994,11 @@
     "autoReconnectFailed": "Connection lost. Auto-reconnect failed after {{count}} attempts. Press R to reconnect, or use right-click → Reconnect.",
     "connectionFailedPermanently": "Connection failed permanently. Press R to reconnect, or use right-click → Reconnect.",
     "outputSaved": "Terminal output saved",
-    "failedToSaveOutput": "Failed to save output"
+    "failedToSaveOutput": "Failed to save output",
+    "previousSessionLost": "Previous session lost. New shell session started.",
+    "ptyStarted": "PTY connection started",
+    "interactiveCommandsHint": "You can now use interactive commands: vim, less, more, top, etc.",
+    "autoReconnecting": "Connection lost. Reconnecting in {{seconds}}s (attempt {{attempt}}/{{max}})..."
   },
   "systemMonitor": {
     "systemOverview": "System Overview",

@@ -9,6 +9,10 @@ export interface TerminalCallbacks {
   onNewTab?: () => void;
   /** Full reconnect: re-establishes the backend connection then remounts the terminal. */
   onReconnectTab?: (tabId: string) => void | Promise<void>;
+  /** Close tab and tear down backend sessions (SSH/SFTP/FTP/desktop). */
+  onCloseTab?: (tabId: string) => void | Promise<void>;
+  /** Close many tabs with backend cleanup for each. */
+  onCloseTabs?: (tabIds: string[]) => void | Promise<void>;
 }
 
 const TerminalCallbacksContext = createContext<TerminalCallbacks>({});

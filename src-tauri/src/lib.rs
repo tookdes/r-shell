@@ -2,6 +2,7 @@ mod commands;
 mod connection_manager;
 mod desktop_protocol;
 mod ftp_client;
+mod known_hosts;
 mod os_detect;
 mod rdp_client;
 mod sftp_client;
@@ -12,7 +13,7 @@ mod websocket_server;
 use connection_manager::ConnectionManager;
 use std::sync::atomic::AtomicU16;
 use std::sync::Arc;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use websocket_server::WebSocketServer;
 
 // Global atomic to store the WebSocket port (shared between backend and frontend)
@@ -256,6 +257,7 @@ pub fn run() {
             commands::ssh_connect,
             commands::ssh_cancel_connect,
             commands::ssh_disconnect,
+            commands::ssh_disconnect_all,
             commands::ssh_execute_command,
             commands::ssh_tab_complete,
             commands::get_system_stats,
@@ -321,6 +323,16 @@ pub fn run() {
             // Note: PTY terminal I/O now uses WebSocket instead of IPC
             // WebSocket server runs on a dynamically assigned port (9001-9010)
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                let app_handle = window.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Some(manager) = app_handle.try_state::<std::sync::Arc<ConnectionManager>>() {
+                        manager.close_all_connections().await;
+                    }
+                });
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -14,7 +14,7 @@ import { TerminalSearchBar } from './terminal/terminal-search-bar';
 import { toast } from 'sonner';
 import { signalReady } from '../lib/restoration-manager';
 import { useTerminalCallbacks } from '../lib/terminal-callbacks-context';
-import { APP_SETTINGS_STORAGE_KEY } from '../lib/keyboard-shortcuts';
+import { loadConnectionTransportSettings } from '../lib/connection-transport-settings';
 import i18n from '../lib/i18n';
 import '@xterm/xterm/css/xterm.css';
 
@@ -39,22 +39,8 @@ interface PtyTerminalProps {
  * Communication is done via WebSocket for low-latency bidirectional streaming.
  */
 
-/** Per-session output cap. When cumulative bytes written to xterm exceed this
- *  value the scrollback is cleared automatically so V8 heap stays bounded.
- *  2 MB of decoded text ≈ ~25k typical 80-char terminal lines. Kept low to
- *  prevent V8 heap fragmentation and WebGL texture-cache bloat during
- *  sustained high-throughput output (e.g. `yes`). */
-const SESSION_OUTPUT_LIMIT_BYTES = 2 * 1024 * 1024;
-
 function isAutoReconnectEnabled(): boolean {
-  try {
-    const raw = localStorage.getItem(APP_SETTINGS_STORAGE_KEY);
-    if (!raw) return true;
-    const settings = JSON.parse(raw) as { autoReconnect?: unknown };
-    return settings.autoReconnect !== false;
-  } catch {
-    return true;
-  }
+  return loadConnectionTransportSettings().autoReconnect;
 }
 
 export function PtyTerminal({
@@ -69,6 +55,11 @@ export function PtyTerminal({
   onOutput,
 }: PtyTerminalProps) {
   const { t } = useTranslation();
+  const { onReconnectTab } = useTerminalCallbacks();
+  const onReconnectTabRef = React.useRef(onReconnectTab);
+  React.useEffect(() => {
+    onReconnectTabRef.current = onReconnectTab;
+  }, [onReconnectTab]);
   const terminalRef = React.useRef<HTMLDivElement | null>(null);
   const xtermRef = React.useRef<XTerm | null>(null);
   const fitRef = React.useRef<FitAddon | null>(null);
@@ -117,8 +108,6 @@ export function PtyTerminal({
   const autoReconnectAfterDropRef = React.useRef(0);
   const MAX_AUTO_RECONNECT_AFTER_DROP = 5;
 
-  // Cumulative bytes written to xterm this session — reset on clear.
-  const sessionOutputRef = React.useRef(0);
   const inputEncoderRef = React.useRef(new TextEncoder());
 
   const sendInputToPty = React.useCallback((data: string): boolean => {
@@ -152,6 +141,18 @@ export function PtyTerminal({
       toast.error(t('ptyTerminal.failedToReadClipboard'));
     }
   }, []);
+
+
+  // Menu bar / global shortcut: clear the active terminal viewport.
+  React.useEffect(() => {
+    if (!isActive) return;
+    const handleClearEvent = () => {
+      xtermRef.current?.clear();
+      setHasScrollableContent(false);
+    };
+    window.addEventListener('r-shell:clear-active-terminal', handleClearEvent);
+    return () => window.removeEventListener('r-shell:clear-active-terminal', handleClearEvent);
+  }, [isActive]);
 
   // Get appearance settings - reloads when appearanceKey changes
   const appearance = React.useMemo(() => loadAppearanceSettings(), [appearanceKey]);
@@ -293,12 +294,8 @@ export function PtyTerminal({
         return false;
       }
       
-      // Handle select all shortcut
-      if (modKey && key === 'a') {
-        event.preventDefault();
-        term.selectAll();
-        return false;
-      }
+      // Intentionally do NOT intercept Ctrl/Cmd+A: shells use it for "beginning of line".
+      // Select-all remains available via the terminal context menu when implemented.
       
       // Handle F3 for search navigation
       if (event.key === 'F3') {
@@ -341,8 +338,7 @@ export function PtyTerminal({
     let writeBuffer = '';
     let watermark = 0;
     let rafId: number | null = null;
-    let creditsGranted = 0;
-    
+        
     // CRITICAL: Wait for terminal to have proper dimensions before connecting
     // Hidden terminals (display: none) may have cols=10, rows=5 which breaks PTY
     const waitForProperSize = () => {
@@ -388,13 +384,30 @@ export function PtyTerminal({
         onConnectionStatusChange?.(connectionId, 'connecting');
       }
       
-      // Get the dynamically assigned WebSocket port from the backend
-      let wsPort = 9001; // fallback default
-      try {
-        wsPort = await invoke<number>('get_websocket_port');
-        console.log(`[PTY Terminal] [${connectionId}] WebSocket port: ${wsPort}`);
-      } catch (e) {
-        console.warn(`[PTY Terminal] [${connectionId}] Failed to get WebSocket port, using default:`, e);
+      // Wait for the backend to publish the bound WebSocket port (9001-9010).
+      // Never guess a fixed fallback — the server may have bound a different port.
+      let wsPort = 0;
+      for (let attempt = 0; attempt < 12; attempt += 1) {
+        try {
+          wsPort = await invoke<number>('get_websocket_port');
+          if (wsPort > 0) {
+            break;
+          }
+        } catch (error) {
+          if (attempt === 11) {
+            term.write('\r\n\x1b[31m[Failed to resolve WebSocket port]\x1b[0m\r\n');
+            connectionStatusRef.current = 'disconnected';
+            onConnectionStatusChange?.(connectionId, 'disconnected');
+            return;
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+      }
+      if (wsPort <= 0) {
+        term.write('\r\n\x1b[31m[WebSocket port unavailable]\x1b[0m\r\n');
+        connectionStatusRef.current = 'disconnected';
+        onConnectionStatusChange?.(connectionId, 'disconnected');
+        return;
       }
       
       console.log(`[PTY Terminal] [${connectionId}] Connecting to WebSocket...`);
@@ -455,13 +468,12 @@ export function PtyTerminal({
       const CREDIT_BATCH = 4;
 
       const grantCredits = (count: number) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          // Send a single Resume per credit (backend Semaphore.add_permits(1))
-          const msg = JSON.stringify({ type: 'Resume', connection_id: connectionId });
-          for (let i = 0; i < count; i++) {
-            ws.send(msg);
-          }
-          creditsGranted += count;
+        if (ws.readyState !== WebSocket.OPEN || count <= 0) {
+          return;
+        }
+        const msg = JSON.stringify({ type: 'Resume', connection_id: connectionId });
+        for (let i = 0; i < count; i++) {
+          ws.send(msg);
         }
       };
 
@@ -472,28 +484,16 @@ export function PtyTerminal({
         const data = writeBuffer;
         writeBuffer = '';
 
-        // Enforce per-session memory cap so xterm's scrollback buffer can't
-        // grow without bound on sustained high-throughput output (e.g. `yes`).
-        sessionOutputRef.current += data.length;
-        if (sessionOutputRef.current >= SESSION_OUTPUT_LIMIT_BYTES) {
-          term.reset();
-          term.clear();
-          sessionOutputRef.current = 0;
-          term.writeln('\x1b[33m[Output limit reached \u2014 scrollback cleared to free memory]\x1b[0m');
-        }
-
         // Single write per animation frame — the key optimisation.
         // Reduces term.write() calls from hundreds/s to ~60/s.
         term.write(data, () => {
           // xterm finished processing this batch — update watermark
           watermark = Math.max(watermark - data.length, 0);
-
-          // Watermark-based flow control: grant credits only when the
-          // pending buffer has drained below LOW_WATER.  Skip granting
-          // if watermark is still above HIGH_WATER (buffer still full).
-          if (watermark < LOW_WATER && watermark < HIGH_WATER && creditsGranted < CREDIT_BATCH * 2) {
-            grantCredits(CREDIT_BATCH);
-            creditsGranted = 0; // reset counter after granting
+          // One completed frontend write returns at most one credit, keeping
+          // outstanding permits bounded (backend spends 1 permit per frame).
+          if (watermark < LOW_WATER) {
+            // Return one permit per drained write batch (backend spends one per frame).
+            grantCredits(1);
           }
         });
 
@@ -524,6 +524,7 @@ export function PtyTerminal({
           if (frameConnectionId !== connectionId) return;
           const payload = data.subarray(payloadOffset);
           if (payload.length === 0) return;
+          onOutputRef.current?.(connectionId);
           enqueueOutput(outputDecoder.decode(payload, { stream: true }));
           return;
         }
@@ -539,10 +540,10 @@ export function PtyTerminal({
                 autoReconnectAfterDropRef.current = 0; // Reset drop-reconnect counter on success
                 if (hasEverConnected || isReconnectAfterDrop) {
                   // Reconnected after a drop — warn that a fresh shell was started
-                  term.writeln('\x1b[33m⚠ Previous session lost. New shell session started.\x1b[0m');
+                  term.writeln(`\x1b[33m! ${i18n.t('ptyTerminal.previousSessionLost')}\x1b[0m`);
                 } else {
-                  term.writeln('\x1b[32m✓ PTY connection started\x1b[0m');
-                  term.writeln('\x1b[90mYou can now use interactive commands: vim, less, more, top, etc.\x1b[0m');
+                  term.writeln(`\x1b[32m* ${i18n.t('ptyTerminal.ptyStarted')}\x1b[0m`);
+                  term.writeln(`\x1b[90m${i18n.t('ptyTerminal.interactiveCommandsHint')}\x1b[0m`);
                 }
                 hasEverConnected = true;
                 isReconnectAfterDrop = false;
@@ -579,19 +580,18 @@ export function PtyTerminal({
             case 'Error': {
               console.error('[PTY Terminal] Error:', msg.message);
               term.write(`\r\n\x1b[31m[Error: ${msg.message}]\x1b[0m\r\n`);
-              const errorMsgLower = msg.message.toLowerCase();
-              // Permanent failures (SSH session gone on the backend) — stop the
-              // retry loop immediately instead of burning through all 5 attempts.
-              if (errorMsgLower.includes('not found') || errorMsgLower.includes('failed to open')) {
+              const errorMsgLower = String(msg.message ?? '').toLowerCase();
+              // Only treat clearly fatal session failures as disconnects.
+              // Transient write/resize/flow-control errors must not kill the tab.
+              const isPermanentFailure =
+                errorMsgLower.includes('not found') ||
+                errorMsgLower.includes('failed to open') ||
+                errorMsgLower.includes('session not found') ||
+                errorMsgLower.includes('connection closed') ||
+                errorMsgLower.includes('disconnected') ||
+                errorMsgLower.includes('channel closed');
+              if (isPermanentFailure) {
                 reconnectAttemptsRef.current = MAX_RECONNECT_ATTEMPTS;
-              }
-              if (errorMsgLower.includes('session not found') || 
-                  errorMsgLower.includes('ssh') || 
-                  errorMsgLower.includes('connection') ||
-                  errorMsgLower.includes('disconnected') ||
-                  errorMsgLower.includes('closed') ||
-                  errorMsgLower.includes('lost') ||
-                  errorMsgLower.includes('pty')) {
                 if (connectionStatusRef.current !== 'disconnected') {
                   connectionStatusRef.current = 'disconnected';
                   onConnectionStatusChange?.(connectionId, 'disconnected');
@@ -652,22 +652,32 @@ export function PtyTerminal({
             const delay = Math.min(2000 * Math.pow(2, dropAttempt), 30000);
             autoReconnectAfterDropRef.current = dropAttempt + 1;
 
-            term.write(`\r\n\x1b[33m[Connection lost. Reconnecting in ${Math.round(delay / 1000)}s (attempt ${dropAttempt + 1}/${MAX_AUTO_RECONNECT_AFTER_DROP})...]\x1b[0m\r\n`);
+            // Full reconnect: re-establish the backend SSH session first.
+            // WS-only reconnect cannot revive a dead SSH connection after sleep/NAT timeout.
+            term.write(
+              `\r\n\x1b[33m[${i18n.t('ptyTerminal.autoReconnecting', {
+                seconds: Math.round(delay / 1000),
+                attempt: dropAttempt + 1,
+                max: MAX_AUTO_RECONNECT_AFTER_DROP,
+              })}]\x1b[0m\r\n`,
+            );
             if (connectionStatusRef.current !== 'connecting') {
               connectionStatusRef.current = 'connecting';
               onConnectionStatusChange?.(connectionId, 'connecting');
             }
 
-            // Reset flags so the reconnect loop can start cleanly.
-            // isReconnectAfterDrop stays true so the Success message warns
-            // the user that a fresh shell was started.
             isReconnectAfterDrop = true;
             hasEverConnected = false;
             reconnectAttemptsRef.current = 0;
 
             setTimeout(() => {
-              if (isRunning) {
-                connectWebSocket();
+              if (!isRunning) return;
+              const fullReconnect = onReconnectTabRef.current;
+              if (fullReconnect) {
+                void fullReconnect(connectionId);
+              } else {
+                // Fallback: remount local PTY/WS only.
+                setReconnectKey((previous) => previous + 1);
               }
             }, delay);
             return;
@@ -691,7 +701,7 @@ export function PtyTerminal({
             connectionStatusRef.current = 'connecting';
             onConnectionStatusChange?.(connectionId, 'connecting');
           }
-          term.write(`\r\n\x1b[33m[Connection closed. Reconnecting in ${Math.round(delay / 1000)}s (attempt ${attempts + 1}/${MAX_RECONNECT_ATTEMPTS})...]\x1b[0m\r\n`);
+          term.write(`\r\n\x1b[33m[${i18n.t('ptyTerminal.autoReconnecting', { seconds: Math.round(delay / 1000), attempt: attempts + 1, max: MAX_RECONNECT_ATTEMPTS })}]\x1b[0m\r\n`);
           setTimeout(() => {
             if (isRunning) {
               connectWebSocket();
@@ -920,12 +930,15 @@ export function PtyTerminal({
 
   const handleClearScrollback = React.useCallback(() => {
     const term = xtermRef.current;
-    if (term) {
-      term.clear();
-      // Note: clearScrollback method doesn't exist in newer xterm versions
-      // clear() already clears both viewport and scrollback
-      setHasScrollableContent(false);
-    }
+    if (!term) return;
+    // xterm.js clear() only clears the viewport. Temporarily zeroing
+    // scrollback forces the buffer to drop history as well.
+    const previousScrollback = term.options.scrollback ?? 0;
+    term.options.scrollback = 0;
+    term.clear();
+    term.options.scrollback = previousScrollback;
+    term.scrollToBottom();
+    setHasScrollableContent(false);
   }, []);
 
   const handleSearch = React.useCallback(() => {
@@ -951,8 +964,6 @@ export function PtyTerminal({
   const handleSelectAll = React.useCallback(() => {
     xtermRef.current?.selectAll();
   }, []);
-
-  const { onReconnectTab } = useTerminalCallbacks();
 
   const handleReconnect = React.useCallback(() => {
     if (onReconnectTab) {

@@ -4,6 +4,7 @@ import { X, Plus, Copy, RefreshCw, ArrowLeft, ArrowRight, XCircle, ArrowUp, Arro
 import type { TerminalTab, SplitDirection } from '../../lib/terminal-group-types';
 import { getTabDisplayName } from '../../lib/terminal-group-utils';
 import { useTerminalGroups } from '../../lib/terminal-group-context';
+import { useTerminalCallbacks } from '../../lib/terminal-callbacks-context';
 import { Button } from '../ui/button';
 import {
   ContextMenu,
@@ -75,6 +76,7 @@ export function GroupTabBar({
 }: GroupTabBarProps) {
   const { t } = useTranslation();
   const { dispatch } = useTerminalGroups();
+  const { onCloseTab, onCloseTabs } = useTerminalCallbacks();
   const [dropIndex, setDropIndex] = useState<number | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [dragGhost, setDragGhost] = useState<{ x: number; y: number; name: string } | null>(null);
@@ -238,9 +240,13 @@ export function GroupTabBar({
 
   const handleTabClose = useCallback(
     (tabId: string) => {
+      if (onCloseTab) {
+        void onCloseTab(tabId);
+        return;
+      }
       dispatch({ type: 'REMOVE_TAB', groupId, tabId });
     },
-    [dispatch, groupId],
+    [dispatch, groupId, onCloseTab],
   );
 
   const handleTabSelect = useCallback(
@@ -358,21 +364,42 @@ export function GroupTabBar({
                   </ContextMenuItem>
                   {/* Close Others */}
                   {tabs.length > 1 && (
-                    <ContextMenuItem onClick={() => dispatch({ type: 'CLOSE_OTHER_TABS', groupId, tabId: tab.id })}>
+                    <ContextMenuItem onClick={() => {
+                      const ids = tabs.filter((item) => item.id !== tab.id).map((item) => item.id);
+                      if (onCloseTabs) {
+                        void onCloseTabs(ids);
+                      } else {
+                        dispatch({ type: 'CLOSE_OTHER_TABS', groupId, tabId: tab.id });
+                      }
+                    }}>
                       <XCircle className="mr-2 h-4 w-4" />
                       {t('contextMenu.closeOtherTabs')}
                     </ContextMenuItem>
                   )}
                   {/* Close to Right */}
                   {index < tabs.length - 1 && (
-                    <ContextMenuItem onClick={() => dispatch({ type: 'CLOSE_TABS_TO_RIGHT', groupId, tabId: tab.id })}>
+                    <ContextMenuItem onClick={() => {
+                      const ids = tabs.slice(index + 1).map((item) => item.id);
+                      if (onCloseTabs) {
+                        void onCloseTabs(ids);
+                      } else {
+                        dispatch({ type: 'CLOSE_TABS_TO_RIGHT', groupId, tabId: tab.id });
+                      }
+                    }}>
                       <ArrowRight className="mr-2 h-4 w-4" />
                       {t('contextMenu.closeTabsToRight')}
                     </ContextMenuItem>
                   )}
                   {/* Close to Left */}
                   {index > 0 && (
-                    <ContextMenuItem onClick={() => dispatch({ type: 'CLOSE_TABS_TO_LEFT', groupId, tabId: tab.id })}>
+                    <ContextMenuItem onClick={() => {
+                      const ids = tabs.slice(0, index).map((item) => item.id);
+                      if (onCloseTabs) {
+                        void onCloseTabs(ids);
+                      } else {
+                        dispatch({ type: 'CLOSE_TABS_TO_LEFT', groupId, tabId: tab.id });
+                      }
+                    }}>
                       <ArrowLeft className="mr-2 h-4 w-4" />
                       {t('contextMenu.closeTabsToLeft')}
                     </ContextMenuItem>

@@ -29,6 +29,19 @@ pub struct SshConfig {
     pub port: u16,
     pub username: String,
     pub auth_method: AuthMethod,
+    /// TCP/SSH handshake timeout in seconds. Defaults to 30 when None/0.
+    #[serde(default)]
+    pub connection_timeout_secs: Option<u64>,
+    /// SSH keepalive interval in seconds. None uses 60; Some(0) disables.
+    #[serde(default)]
+    pub keepalive_interval_secs: Option<u64>,
+    /// When true (default), use TOFU known_hosts verification.
+    #[serde(default = "default_verify_host_key")]
+    pub verify_host_key: bool,
+}
+
+fn default_verify_host_key() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,7 +79,23 @@ pub struct PtySession {
     pub cancel: CancellationToken,
 }
 
-pub struct Client;
+/// russh client handler. Carries host identity so check_server_key can
+/// consult the known_hosts store (meatshell-inspired TOFU).
+pub struct Client {
+    pub host: String,
+    pub port: u16,
+    pub verify_host_key: bool,
+}
+
+impl Client {
+    pub fn new(host: impl Into<String>, port: u16, verify_host_key: bool) -> Self {
+        Self {
+            host: host.into(),
+            port,
+            verify_host_key,
+        }
+    }
+}
 
 #[async_trait::async_trait]
 impl client::Handler for Client {
@@ -74,9 +103,14 @@ impl client::Handler for Client {
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &key::PublicKey,
+        server_public_key: &key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        Ok(true) // In production, verify the server key
+        Ok(crate::known_hosts::check_or_remember(
+            &self.host,
+            self.port,
+            server_public_key,
+            self.verify_host_key,
+        ))
     }
 }
 
@@ -86,28 +120,52 @@ impl SshClient {
     }
 
     pub async fn connect(&mut self, config: &SshConfig) -> Result<()> {
+        let keepalive_interval_secs = config.keepalive_interval_secs.unwrap_or(60);
+        let keepalive_interval = if keepalive_interval_secs == 0 {
+            None
+        } else {
+            Some(Duration::from_secs(keepalive_interval_secs))
+        };
+
         let ssh_config = client::Config {
             preferred: russh::Preferred {
                 key: std::borrow::Cow::Borrowed(PREFERRED_HOST_KEY_ALGOS),
                 ..russh::Preferred::DEFAULT
             },
-            // Send a keepalive every 60 s. After 3 missed replies russh closes
-            // the connection, preventing the server from silently dropping idle
-            // sessions after hours of inactivity.
-            keepalive_interval: Some(Duration::from_secs(60)),
+            // Keepalive interval comes from app settings (default 60 s).
+            // After 3 missed replies russh closes a dead connection.
+            keepalive_interval,
             keepalive_max: 3,
             ..client::Config::default()
         };
 
-        // Connection timeout: 3 seconds
-        let connection_timeout = Duration::from_secs(3);
+        let timeout_secs = config
+            .connection_timeout_secs
+            .filter(|value| *value > 0)
+            .unwrap_or(30);
+        let connection_timeout = Duration::from_secs(timeout_secs);
 
+        let handler = Client::new(config.host.clone(), config.port, config.verify_host_key);
         let mut ssh_session = tokio::time::timeout(
             connection_timeout,
-            client::connect(Arc::new(ssh_config), (&config.host[..], config.port), Client)
-        ).await
-            .map_err(|_| anyhow::anyhow!("Connection timed out after 3 seconds. Please check the host address and network connectivity."))?
-            .map_err(|e| anyhow::anyhow!("Failed to connect to {}:{}: {}", config.host, config.port, e))?;
+            client::connect(Arc::new(ssh_config), (&config.host[..], config.port), handler),
+        )
+        .await
+            .map_err(|_| anyhow::anyhow!(
+                "Connection timed out after {} seconds. Please check the host address and network connectivity.",
+                timeout_secs
+            ))?
+            .map_err(|e| {
+                let message = e.to_string().to_lowercase();
+                if message.contains("key") || message.contains("host") {
+                    anyhow::anyhow!(
+                        "Failed to connect to {}:{}: {}. If the host key changed, clear the known_hosts entry after verifying the server.",
+                        config.host, config.port, e
+                    )
+                } else {
+                    anyhow::anyhow!("Failed to connect to {}:{}: {}", config.host, config.port, e)
+                }
+            })?;
 
         let authenticated = match &config.auth_method {
             AuthMethod::Password { password } => ssh_session

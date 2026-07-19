@@ -93,6 +93,15 @@ impl ConnectionManager {
     }
 
     pub async fn close_connection(&self, connection_id: &str) -> Result<()> {
+        // Tear down any interactive PTY first so reader tasks stop promptly.
+        {
+            let mut pty_sessions = self.pty_sessions.write().await;
+            if let Some(old_session) = pty_sessions.remove(connection_id) {
+                old_session.cancel.cancel();
+                tracing::info!("Cancelled PTY session while closing {}", connection_id);
+            }
+        }
+
         let mut connections = self.connections.write().await;
         if let Some(client) = connections.remove(connection_id) {
             let mut client = client.write().await;
@@ -108,7 +117,27 @@ impl ConnectionManager {
         &self.os_info_cache
     }
 
-    pub async fn list_connections(&self) -> Vec<String> {
+    /// Close every SSH connection and cancel all PTY sessions.
+    pub async fn close_all_connections(&self) {
+        let connection_ids: Vec<String> = {
+            let connections = self.connections.read().await;
+            connections.keys().cloned().collect()
+        };
+        for connection_id in connection_ids {
+            if let Err(error) = self.close_connection(&connection_id).await {
+                tracing::warn!("Failed to close connection {}: {}", connection_id, error);
+            }
+        }
+
+        // Cancel any leftover PTY sessions not paired with a connection entry.
+        let mut pty_sessions = self.pty_sessions.write().await;
+        for (connection_id, session) in pty_sessions.drain() {
+            session.cancel.cancel();
+            tracing::info!("Cancelled orphaned PTY session for {}", connection_id);
+        }
+    }
+
+        pub async fn list_connections(&self) -> Vec<String> {
         let connections = self.connections.read().await;
         connections.keys().cloned().collect()
     }
@@ -159,25 +188,22 @@ impl ConnectionManager {
         Ok(current_gen)
     }
 
-    /// Send data to PTY (user input)
-    /// Uses try_send for better performance (non-blocking)
+    /// Send data to PTY (user input).
+    /// Prefer non-blocking try_send; if the channel is full, await ordered send
+    /// so keystrokes/paste never race with later spawn tasks.
     pub async fn write_to_pty(&self, connection_id: &str, data: Vec<u8>) -> Result<()> {
         let pty_sessions = self.pty_sessions.read().await;
         let pty = pty_sessions
             .get(connection_id)
             .ok_or_else(|| anyhow::anyhow!("PTY connection not found"))?;
 
-        // Use try_send for better performance (like ttyd's immediate send)
         match pty.input_tx.try_send(data) {
             Ok(_) => Ok(()),
-            Err(tokio::sync::mpsc::error::TrySendError::Full(data)) => {
-                // If channel is full, fall back to async send in background
-                let tx = pty.input_tx.clone();
-                tokio::spawn(async move {
-                    let _ = tx.send(data).await;
-                });
-                Ok(())
-            }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(data)) => pty
+                .input_tx
+                .send(data)
+                .await
+                .map_err(|_| anyhow::anyhow!("PTY channel closed")),
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                 Err(anyhow::anyhow!("PTY channel closed"))
             }

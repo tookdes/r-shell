@@ -7,6 +7,9 @@
 
 export type Protocol = 'SSH' | 'Telnet' | 'Raw' | 'Serial' | 'SFTP' | 'FTP' | 'RDP' | 'VNC';
 
+/** Protocols with a working backend implementation in this release. */
+export const IMPLEMENTED_PROTOCOLS: Protocol[] = ['SSH', 'SFTP', 'FTP'];
+
 export type AuthMethod = 'password' | 'publickey' | 'keyboard-interactive' | 'anonymous';
 
 const DEFAULT_PORTS: Record<Protocol, number> = {
@@ -21,7 +24,8 @@ const DEFAULT_PORTS: Record<Protocol, number> = {
 };
 
 const AUTH_METHODS: Record<Protocol, AuthMethod[]> = {
-  SSH: ['password', 'publickey', 'keyboard-interactive'],
+  // keyboard-interactive is not accepted by the current Rust backend.
+  SSH: ['password', 'publickey'],
   SFTP: ['password', 'publickey'],
   FTP: ['password', 'anonymous'],
   Telnet: ['password'],
@@ -67,4 +71,10 @@ export function getHiddenFields(protocol: Protocol): SshSpecificField[] {
  */
 export function isDesktopProtocol(protocol: Protocol): boolean {
   return protocol === 'RDP' || protocol === 'VNC';
+}
+
+
+/** Returns true when the protocol is fully implemented end-to-end. */
+export function isProtocolImplemented(protocol: Protocol): boolean {
+  return IMPLEMENTED_PROTOCOLS.includes(protocol);
 }

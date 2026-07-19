@@ -12,6 +12,8 @@ export interface ConnectionData {
   protocol: string;
   folder?: string; // Path to parent folder (e.g., 'All Connections/Work')
   profileId?: string; // Link to connection profile if created from one
+  /** Manual order within the parent folder. Lower values appear first. */
+  sortOrder?: number;
   createdAt: string;
   lastConnected?: string;
   favorite?: boolean;
@@ -38,7 +40,36 @@ export interface ConnectionFolder {
   name: string;
   path: string; // Full path (e.g., 'All Connections/Work/Production')
   parentPath?: string; // Parent folder path
+  /** Manual order among sibling folders. Lower values appear first. */
+  sortOrder?: number;
   createdAt: string;
+}
+
+
+function shouldPersistPasswords(): boolean {
+  try {
+    const raw = localStorage.getItem('sshClientSettings');
+    if (!raw) return true;
+    const parsed = JSON.parse(raw) as { savePasswords?: unknown };
+    // Default true for backward compatibility when key is absent; explicit false strips secrets.
+    return parsed.savePasswords !== false;
+  } catch {
+    return true;
+  }
+}
+
+function maybeStripSecrets<T extends { password?: string; passphrase?: string; vncPassword?: string }>(
+  connection: T,
+): T {
+  if (shouldPersistPasswords()) {
+    return connection;
+  }
+  return {
+    ...connection,
+    password: undefined,
+    passphrase: undefined,
+    vncPassword: undefined,
+  };
 }
 
 const CONNECTIONS_STORAGE_KEY = 'r-shell-connections';
@@ -47,6 +78,30 @@ const FOLDERS_STORAGE_KEY = 'r-shell-connection-folders';
 // Legacy keys for migration
 const LEGACY_SESSIONS_STORAGE_KEY = 'r-shell-sessions';
 const LEGACY_FOLDERS_STORAGE_KEY = 'r-shell-session-folders';
+
+/** Stable ordering: explicit sortOrder first, then case-insensitive name. */
+export function compareConnectionTreeItems(
+  left: { sortOrder?: number; name: string; createdAt?: string },
+  right: { sortOrder?: number; name: string; createdAt?: string },
+): number {
+  const leftOrder = left.sortOrder ?? Number.MAX_SAFE_INTEGER;
+  const rightOrder = right.sortOrder ?? Number.MAX_SAFE_INTEGER;
+  if (leftOrder !== rightOrder) {
+    return leftOrder - rightOrder;
+  }
+
+  const nameCompare = left.name.localeCompare(right.name, undefined, {
+    sensitivity: 'base',
+    numeric: true,
+  });
+  if (nameCompare !== 0) {
+    return nameCompare;
+  }
+
+  const leftCreated = left.createdAt ?? '';
+  const rightCreated = right.createdAt ?? '';
+  return leftCreated.localeCompare(rightCreated);
+}
 
 export class ConnectionStorageManager {
   /**
@@ -163,13 +218,17 @@ export class ConnectionStorageManager {
    */
   static saveConnection(connection: Omit<ConnectionData, 'id' | 'createdAt'>): ConnectionData {
     const connections = this.getConnections();
+    const folderPath = connection.folder || 'All Connections';
+    const sortOrder =
+      connection.sortOrder ?? this.getNextConnectionSortOrder(folderPath, connections);
 
-    const newConnection: ConnectionData = {
+    const newConnection: ConnectionData = maybeStripSecrets({
       ...connection,
       id: crypto.randomUUID(),
       createdAt: new Date().toISOString(),
-      folder: connection.folder || 'All Connections',
-    };
+      folder: folderPath,
+      sortOrder,
+    });
 
     connections.push(newConnection);
     localStorage.setItem(CONNECTIONS_STORAGE_KEY, JSON.stringify(connections));
@@ -186,14 +245,21 @@ export class ConnectionStorageManager {
 
     // Check if connection with this ID already exists
     const existingIndex = connections.findIndex(c => c.id === id);
+    const folderPath = connection.folder || 'All Connections';
+    const existingConnection = existingIndex !== -1 ? connections[existingIndex] : undefined;
+    const sortOrder =
+      connection.sortOrder ??
+      existingConnection?.sortOrder ??
+      this.getNextConnectionSortOrder(folderPath, connections);
 
-    const newConnection: ConnectionData = {
+    const newConnection: ConnectionData = maybeStripSecrets({
       ...connection,
       id,
       createdAt: new Date().toISOString(),
       lastConnected: new Date().toISOString(),
-      folder: connection.folder || 'All Connections',
-    };
+      folder: folderPath,
+      sortOrder,
+    });
 
     if (existingIndex !== -1) {
       // Update existing connection
@@ -217,10 +283,10 @@ export class ConnectionStorageManager {
 
     if (index === -1) return null;
 
-    connections[index] = {
+    connections[index] = maybeStripSecrets({
       ...connections[index],
       ...updates,
-    };
+    });
 
     localStorage.setItem(CONNECTIONS_STORAGE_KEY, JSON.stringify(connections));
     return connections[index];
@@ -252,7 +318,145 @@ export class ConnectionStorageManager {
    * Move connection to a different folder
    */
   static moveConnection(connectionId: string, newFolderPath: string): boolean {
-    return this.updateConnection(connectionId, { folder: newFolderPath }) !== null;
+    const connections = this.getConnections();
+    const connectionIndex = connections.findIndex((connection) => connection.id === connectionId);
+    if (connectionIndex === -1) {
+      return false;
+    }
+
+    const currentFolder = connections[connectionIndex].folder || 'All Connections';
+    if (currentFolder === newFolderPath) {
+      return true;
+    }
+
+    connections[connectionIndex] = {
+      ...connections[connectionIndex],
+      folder: newFolderPath,
+      sortOrder: this.getNextConnectionSortOrder(newFolderPath, connections, connectionId),
+    };
+
+    localStorage.setItem(CONNECTIONS_STORAGE_KEY, JSON.stringify(connections));
+    return true;
+  }
+
+  /**
+   * Place a connection in a folder at a specific position.
+   * When `beforeConnectionId` is null, append to the end of the folder.
+   */
+  static placeConnection(
+    connectionId: string,
+    targetFolderPath: string,
+    beforeConnectionId: string | null = null,
+  ): boolean {
+    const connections = this.getConnections();
+    const movingConnection = connections.find((connection) => connection.id === connectionId);
+    if (!movingConnection) {
+      return false;
+    }
+
+    if (beforeConnectionId === connectionId) {
+      return true;
+    }
+
+    const orderedInFolder = connections
+      .filter(
+        (connection) =>
+          connection.id !== connectionId &&
+          (connection.folder || 'All Connections') === targetFolderPath,
+      )
+      .sort(compareConnectionTreeItems);
+
+    const insertIndex =
+      beforeConnectionId === null
+        ? orderedInFolder.length
+        : orderedInFolder.findIndex((connection) => connection.id === beforeConnectionId);
+
+    if (beforeConnectionId !== null && insertIndex === -1) {
+      return false;
+    }
+
+    const nextOrder = [...orderedInFolder];
+    nextOrder.splice(insertIndex === -1 ? nextOrder.length : insertIndex, 0, {
+      ...movingConnection,
+      folder: targetFolderPath,
+    });
+
+    const orderById = new Map(nextOrder.map((connection, index) => [connection.id, index]));
+    const updatedConnections = connections.map((connection) => {
+      const nextSortOrder = orderById.get(connection.id);
+      if (nextSortOrder === undefined) {
+        return connection;
+      }
+      return {
+        ...connection,
+        folder: targetFolderPath,
+        sortOrder: nextSortOrder,
+      };
+    });
+
+    localStorage.setItem(CONNECTIONS_STORAGE_KEY, JSON.stringify(updatedConnections));
+    return true;
+  }
+
+  /**
+   * Sort direct children of a folder alphabetically and persist the new order.
+   * - Connections whose `folder` equals `folderPath`
+   * - Immediate subfolders whose `parentPath` equals `folderPath`
+   * Returns true when the folder exists (even if it had nothing to reorder).
+   */
+  static sortConnectionsInFolderByName(folderPath: string): boolean {
+    const folders = this.getFolders();
+    const folderExists =
+      folderPath === 'All Connections' || folders.some((folder) => folder.path === folderPath);
+    if (!folderExists) {
+      return false;
+    }
+
+    const connections = this.getConnections();
+    const orderedConnections = connections
+      .filter((connection) => (connection.folder || 'All Connections') === folderPath)
+      .sort((left, right) =>
+        left.name.localeCompare(right.name, undefined, {
+          sensitivity: 'base',
+          numeric: true,
+        }),
+      );
+
+    const orderedSubfolders = folders
+      .filter((folder) => folder.parentPath === folderPath)
+      .sort((left, right) =>
+        left.name.localeCompare(right.name, undefined, {
+          sensitivity: 'base',
+          numeric: true,
+        }),
+      );
+
+    const connectionOrderById = new Map(
+      orderedConnections.map((connection, index) => [connection.id, index]),
+    );
+    const folderOrderById = new Map(
+      orderedSubfolders.map((folder, index) => [folder.id, index]),
+    );
+
+    const updatedConnections = connections.map((connection) => {
+      const nextSortOrder = connectionOrderById.get(connection.id);
+      if (nextSortOrder === undefined) {
+        return connection;
+      }
+      return { ...connection, sortOrder: nextSortOrder };
+    });
+
+    const updatedFolders = folders.map((folder) => {
+      const nextSortOrder = folderOrderById.get(folder.id);
+      if (nextSortOrder === undefined) {
+        return folder;
+      }
+      return { ...folder, sortOrder: nextSortOrder };
+    });
+
+    localStorage.setItem(CONNECTIONS_STORAGE_KEY, JSON.stringify(updatedConnections));
+    localStorage.setItem(FOLDERS_STORAGE_KEY, JSON.stringify(updatedFolders));
+    return true;
   }
 
   /**
@@ -286,6 +490,7 @@ export class ConnectionStorageManager {
       name,
       path,
       parentPath,
+      sortOrder: this.getNextFolderSortOrder(parentPath, folders),
       createdAt: new Date().toISOString(),
     };
 
@@ -369,7 +574,9 @@ export class ConnectionStorageManager {
       const result: ConnectionTreeNode[] = [];
 
       // Get direct subfolders
-      const subfolders = folders.filter(f => f.parentPath === parentPath);
+      const subfolders = folders
+        .filter((folder) => folder.parentPath === parentPath)
+        .sort(compareConnectionTreeItems);
 
       for (const folder of subfolders) {
         const folderNode: ConnectionTreeNode = {
@@ -382,6 +589,7 @@ export class ConnectionStorageManager {
             ...buildFolderTree(folder.path),
             ...connections
               .filter(c => c.folder === folder.path)
+              .sort(compareConnectionTreeItems)
               .map(c => ({
                 id: c.id,
                 name: c.name,
@@ -496,6 +704,113 @@ export class ConnectionStorageManager {
     localStorage.removeItem(CONNECTIONS_STORAGE_KEY);
     localStorage.removeItem(FOLDERS_STORAGE_KEY);
     this.initialize();
+  }
+
+  /**
+   * Move a folder (and all nested folders/connections) under a new parent path.
+   */
+  static moveFolder(sourcePath: string, targetParentPath: string): boolean {
+    if (sourcePath === 'All Connections') {
+      return false;
+    }
+    if (targetParentPath === sourcePath || targetParentPath.startsWith(sourcePath + '/')) {
+      return false;
+    }
+
+    const folders = this.getFolders();
+    const connections = this.getConnections();
+    const sourceFolder = folders.find((folder) => folder.path === sourcePath);
+    if (!sourceFolder) {
+      return false;
+    }
+
+    const folderName = sourceFolder.name;
+    const newPath = `${targetParentPath}/${folderName}`;
+    if (folders.some((folder) => folder.path === newPath)) {
+      return false;
+    }
+
+    const rewritePath = (path: string): string => {
+      if (path === sourcePath) {
+        return newPath;
+      }
+      if (path.startsWith(sourcePath + '/')) {
+        return newPath + path.slice(sourcePath.length);
+      }
+      return path;
+    };
+
+    const updatedFolders = folders.map((folder) => {
+      if (folder.path !== sourcePath && !folder.path.startsWith(sourcePath + '/')) {
+        return folder;
+      }
+      const nextPath = rewritePath(folder.path);
+      const nextParent =
+        folder.path === sourcePath
+          ? targetParentPath
+          : folder.parentPath
+            ? rewritePath(folder.parentPath)
+            : folder.parentPath;
+      return {
+        ...folder,
+        path: nextPath,
+        parentPath: nextParent,
+      };
+    });
+
+    const updatedConnections = connections.map((connection) => {
+      if (!connection.folder) {
+        return connection;
+      }
+      if (connection.folder !== sourcePath && !connection.folder.startsWith(sourcePath + '/')) {
+        return connection;
+      }
+      return {
+        ...connection,
+        folder: rewritePath(connection.folder),
+      };
+    });
+
+    localStorage.setItem(FOLDERS_STORAGE_KEY, JSON.stringify(updatedFolders));
+    localStorage.setItem(CONNECTIONS_STORAGE_KEY, JSON.stringify(updatedConnections));
+    return true;
+  }
+
+    private static getNextConnectionSortOrder(
+    folderPath: string,
+    connections: ConnectionData[] = this.getConnections(),
+    excludeConnectionId?: string,
+  ): number {
+    const sortOrders = connections
+      .filter(
+        (connection) =>
+          connection.id !== excludeConnectionId &&
+          (connection.folder || 'All Connections') === folderPath,
+      )
+      .map((connection) => connection.sortOrder)
+      .filter((sortOrder): sortOrder is number => typeof sortOrder === 'number');
+
+    if (sortOrders.length === 0) {
+      return 0;
+    }
+
+    return Math.max(...sortOrders) + 1;
+  }
+
+  private static getNextFolderSortOrder(
+    parentPath: string | undefined,
+    folders: ConnectionFolder[] = this.getFolders(),
+  ): number {
+    const sortOrders = folders
+      .filter((folder) => folder.parentPath === parentPath)
+      .map((folder) => folder.sortOrder)
+      .filter((sortOrder): sortOrder is number => typeof sortOrder === 'number');
+
+    if (sortOrders.length === 0) {
+      return 0;
+    }
+
+    return Math.max(...sortOrders) + 1;
   }
 }
 
