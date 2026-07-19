@@ -164,7 +164,10 @@ vi.mock('sonner', () => ({
   },
 }));
 
-function renderTerminal(isActive: boolean) {
+function renderTerminal(
+  isActive: boolean,
+  props: Partial<React.ComponentProps<typeof PtyTerminal>> = {},
+) {
   return render(
     <PtyTerminal
       connectionId="connection-1"
@@ -172,6 +175,7 @@ function renderTerminal(isActive: boolean) {
       host="127.0.0.1"
       username="root"
       isActive={isActive}
+      {...props}
     />,
   );
 }
@@ -315,6 +319,21 @@ describe('PtyTerminal activation', () => {
     expect(terminal.write).toHaveBeenCalledWith(expect.stringContaining('Press R'));
   });
 
+
+  it('notifies when PTY output arrives', async () => {
+    const onOutput = vi.fn();
+    renderTerminal(false, { onOutput });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60);
+    });
+
+    const output = Array.from(new TextEncoder().encode('remote output'));
+    mocks.webSockets[0].onmessage?.({
+      data: JSON.stringify({ type: 'Output', data: output }),
+    } as MessageEvent);
+
+    expect(onOutput).toHaveBeenCalledWith('connection-1');
+  });
   it('lets xterm handle Ctrl+V paste without duplicate custom send', async () => {
     const { readText } = await import('@tauri-apps/plugin-clipboard-manager');
     const readTextMock = vi.mocked(readText);
