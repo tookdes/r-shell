@@ -27,6 +27,7 @@ interface PtyTerminalProps {
   themeKey?: number;
   isActive?: boolean;
   onConnectionStatusChange?: (connectionId: string, status: 'connected' | 'connecting' | 'disconnected' | 'pending') => void;
+  onOutput?: (connectionId: string) => void;
 }
 
 /**
@@ -64,7 +65,8 @@ export function PtyTerminal({
   appearanceKey = 0,
   themeKey = 0,
   isActive = true,
-  onConnectionStatusChange
+  onConnectionStatusChange,
+  onOutput,
 }: PtyTerminalProps) {
   const { t } = useTranslation();
   const terminalRef = React.useRef<HTMLDivElement | null>(null);
@@ -78,6 +80,7 @@ export function PtyTerminal({
   const containerRef = React.useRef<HTMLDivElement | null>(null);
   const initialIsActiveRef = React.useRef(isActive);
   const wasActiveRef = React.useRef(isActive);
+  const onOutputRef = React.useRef(onOutput);
   
   // Search bar state
   const [searchVisible, setSearchVisible] = React.useState(false);
@@ -95,6 +98,10 @@ export function PtyTerminal({
   const hadBackgroundImageRef = React.useRef<boolean | null>(null);
   // Track connection status to avoid duplicate notifications
   const connectionStatusRef = React.useRef<'connected' | 'connecting' | 'disconnected'>('connecting');
+
+  React.useEffect(() => {
+    onOutputRef.current = onOutput;
+  }, [onOutput]);
   
   // PTY session generation — used in Close to avoid stale-close races
   const ptyGenerationRef = React.useRef<number | null>(null);
@@ -564,6 +571,7 @@ export function PtyTerminal({
               
             case 'Output':
               if (msg.data && msg.data.length > 0) {
+                onOutputRef.current?.(connectionId);
                 enqueueOutput(new TextDecoder().decode(new Uint8Array(msg.data)));
               }
               break;
