@@ -1352,7 +1352,7 @@ export function IntegratedFileBrowser({ connectionId, host: _host, isConnected, 
   }
 
   return (
-    <div className={`h-full flex flex-col bg-background border-t ${resizingColumn ? 'cursor-col-resize select-none' : ''}`}>
+    <div className={`h-full flex flex-col bg-background ${resizingColumn ? 'cursor-col-resize select-none' : ''}`}>
       {/* File Browser Toolbar */}
       <div className="relative z-10 pt-2 pb-1">
         <div className="flex items-center gap-0.5 overflow-x-auto whitespace-nowrap rounded-lg border border-border/70 bg-background/90 px-1.5 py-1 text-xs shadow-sm backdrop-blur-sm scrollbar-none">

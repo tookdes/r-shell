@@ -241,6 +241,29 @@ describe('useKeyboardShortcuts', () => {
     expect(wasNotPrevented).toBe(false);
     expect(actions.toggleLeftSidebar).toHaveBeenCalledOnce();
   });
+
+  it('handles split Ctrl+Tab while terminal is focused', () => {
+    const actions = createMockActions();
+    const shortcuts = createSplitViewShortcuts(actions);
+    render(React.createElement(ShortcutHarness, { shortcuts }));
+
+    const xterm = document.createElement('div');
+    xterm.className = 'xterm';
+    const textarea = document.createElement('textarea');
+    xterm.appendChild(textarea);
+    document.body.appendChild(xterm);
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    const wasNotPrevented = textarea.dispatchEvent(event);
+
+    expect(wasNotPrevented).toBe(false);
+    expect(actions.nextTab).toHaveBeenCalledOnce();
+  });
 });
 
 describe('keyboard shortcut settings', () => {

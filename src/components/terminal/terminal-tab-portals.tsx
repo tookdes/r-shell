@@ -16,6 +16,7 @@ import { PtyTerminal } from '../pty-terminal';
 import { FileBrowserView } from '../file-browser-view';
 import { DesktopViewer } from '../desktop-viewer';
 import { FileEditorView } from '../file-editor-view';
+import { APPEARANCE_SETTINGS_CHANGED_EVENT } from '../../lib/terminal-config';
 
 interface TerminalTabPortalContextValue {
   getPortalNode: (tabId: string) => HTMLDivElement;
@@ -47,7 +48,7 @@ function useThemeKey(): number {
   return themeKey;
 }
 
-function TerminalTabContent({ tab, themeKey }: { tab: TerminalTab; themeKey: number }) {
+function TerminalTabContent({ tab, themeKey, appearanceKey }: { tab: TerminalTab; themeKey: number; appearanceKey: number }) {
   const { state, dispatch } = useTerminalGroups();
   const { onReconnectTab } = useTerminalCallbacks();
   const groupId = state.tabToGroupMap[tab.id];
@@ -161,6 +162,7 @@ function TerminalTabContent({ tab, themeKey }: { tab: TerminalTab; themeKey: num
         host={tab.host}
         username={tab.username}
         themeKey={themeKey}
+        appearanceKey={appearanceKey}
         isActive={isActive}
         onConnectionStatusChange={handleConnectionStatusChange}
         onOutput={isVisible ? undefined : handleTerminalOutput}
@@ -194,6 +196,17 @@ export function TerminalTabPortalProvider({ children }: { children: React.ReactN
   const { state } = useTerminalGroups();
   const [portalNodes] = useState(() => new Map<string, HTMLDivElement>());
   const themeKey = useThemeKey();
+  const [appearanceKey, setAppearanceKey] = useState(0);
+
+  useEffect(() => {
+    const handleAppearanceChange = () => {
+      setAppearanceKey((key) => key + 1);
+    };
+    window.addEventListener(APPEARANCE_SETTINGS_CHANGED_EVENT, handleAppearanceChange);
+    return () => {
+      window.removeEventListener(APPEARANCE_SETTINGS_CHANGED_EVENT, handleAppearanceChange);
+    };
+  }, []);
 
   const allTabs = useMemo(
     () => Object.values(state.groups).flatMap((group) => group.tabs),
@@ -228,7 +241,7 @@ export function TerminalTabPortalProvider({ children }: { children: React.ReactN
       {children}
       {allTabs.map((tab) =>
         createPortal(
-          <TerminalTabContent tab={tab} themeKey={themeKey} />,
+          <TerminalTabContent tab={tab} themeKey={themeKey} appearanceKey={appearanceKey} />,
           getPortalNode(tab.id),
           tab.id,
         ),

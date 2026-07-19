@@ -182,7 +182,8 @@ function isTerminalInputTarget(target: EventTarget | null): boolean {
     return false;
   }
 
-  return target.tagName === 'TEXTAREA' || target.closest('.xterm') !== null;
+  // Only the xterm helper textarea counts as terminal input — not app form fields.
+  return target.closest('.xterm') !== null;
 }
 
 export function isEditableTarget(target: EventTarget | null): boolean {
@@ -215,7 +216,11 @@ export function useKeyboardShortcuts(shortcuts: KeyboardShortcut[], enabled: boo
     const isMac = navigator.platform.toUpperCase().includes('MAC');
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (isEditableTarget(event.target)) {
+      const terminalFocused = isTerminalInputTarget(event.target);
+      // Block shortcuts only for real form fields. xterm's hidden textarea must
+      // still allow app-level shortcuts (tab switch, split, close) while
+      // respecting ignoreInTerminal for layout keys that bash also uses.
+      if (isEditableTarget(event.target) && !terminalFocused) {
         return;
       }
 
@@ -239,8 +244,8 @@ export function useKeyboardShortcuts(shortcuts: KeyboardShortcut[], enabled: boo
         }
 
         if (keyMatch && ctrlMatch && shiftMatch && altMatch && metaMatch) {
-          if (shortcut.ignoreInTerminal && isTerminalInputTarget(event.target)) {
-            return;
+          if (shortcut.ignoreInTerminal && terminalFocused) {
+            continue;
           }
           event.preventDefault();
           event.stopPropagation();
@@ -292,13 +297,7 @@ export const createLayoutShortcuts = (actions: {
     handler: actions.toggleZenMode,
     description: 'Toggle Zen Mode',
   },
-  {
-    key: '\\',
-    ctrlKey: true,
-    ignoreInTerminal: true,
-    handler: actions.toggleLeftSidebar,
-    description: 'Toggle Connection Manager (Alternative)',
-  },
+  // Ctrl+\\ removed as layout alias — it dual-purposed with split and shell SIGQUIT.
 ];
 
 /**
@@ -326,6 +325,8 @@ export const createSplitViewShortcuts = (actions: {
       key: '\\',
       ctrlKey: true,
       shiftKey: false,
+      // Avoid stealing shell SIGQUIT (Ctrl+\\) while the terminal is focused.
+      ignoreInTerminal: true,
       handler: actions.splitRight,
       description: 'Split terminal right',
     },
@@ -333,6 +334,7 @@ export const createSplitViewShortcuts = (actions: {
       key: '\\',
       ctrlKey: true,
       shiftKey: true,
+      ignoreInTerminal: true,
       handler: actions.splitDown,
       description: 'Split terminal down',
     },
@@ -341,6 +343,7 @@ export const createSplitViewShortcuts = (actions: {
       key: String(i + 1),
       ctrlKey: true,
       shiftKey: false,
+      ignoreInTerminal: true,
       handler: () => actions.focusGroup(i),
       description: `Focus terminal group ${i + 1}`,
     })),

@@ -381,14 +381,7 @@ body {
   background-color: rgba(255, 255, 255, 0.45);
 }
 
-/* Resizable handle cursor styles */
-[data-slot="resizable-handle"] {
-  cursor: col-resize !important;
-}
-
-[data-slot="resizable-handle"][data-panel-group-direction="vertical"] {
-  cursor: row-resize !important;
-}
+/* Resizable handle cursors come from Tailwind classes on ResizableHandle. */
 
 /* Focus ring styles */
 :focus-visible {

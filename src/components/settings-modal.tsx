@@ -60,6 +60,7 @@ import {
 } from '@/lib/config-export-import';
 import { normalizeUpdateProxy } from '@/lib/update-proxy';
 import { Checkbox } from './ui/checkbox';
+import { useLayout } from '@/lib/layout-context';
 
 interface SettingsModalProps {
   open: boolean;
@@ -70,6 +71,7 @@ interface SettingsModalProps {
 
 export function SettingsModal({ open, onOpenChange, onAppearanceChange, onCheckForUpdates }: SettingsModalProps) {
   const { t } = useTranslation();
+  const { layout } = useLayout();
   const [languagePref, setLanguagePref] = useState<string>(() => getLanguagePreference());
   const [terminalAppearance, setTerminalAppearance] = useState<TerminalAppearanceSettings>(defaultAppearanceSettings);
   const [editorConfig, setEditorConfig] = useState<EditorConfig>(DEFAULT_EDITOR_CONFIG);
@@ -133,16 +135,27 @@ export function SettingsModal({ open, onOpenChange, onAppearanceChange, onCheckF
           setSettings(prev => ({
             ...prev,
             ...parsed,
+            // Reflect live layout for panel toggles (Ctrl+B / Ctrl+M can diverge from saved settings).
+            showConnectionManager: layout.leftSidebarVisible,
+            showSystemMonitor: layout.rightSidebarVisible,
+            showStatusBar:
+              typeof parsed.showStatusBar === 'boolean' ? parsed.showStatusBar : prev.showStatusBar,
             closeSession: keyboardShortcuts.closeTab,
             nextTab: keyboardShortcuts.nextTab,
             previousTab: keyboardShortcuts.prevTab,
+          }));
+        } else {
+          setSettings((previous) => ({
+            ...previous,
+            showConnectionManager: layout.leftSidebarVisible,
+            showSystemMonitor: layout.rightSidebarVisible,
           }));
         }
       } catch {
         // Ignore parsing errors
       }
     }
-  }, [open]);
+  }, [open, layout.leftSidebarVisible, layout.rightSidebarVisible]);
 
   const handleExportConfig = async () => {
     setIsExporting(true);
@@ -964,17 +977,18 @@ export function SettingsModal({ open, onOpenChange, onAppearanceChange, onCheckF
                   />
                 </div>
 
-                <div className="space-y-2">
+                <div className="space-y-2 opacity-60">
                   <Label>{t('settings.security.autoLockTimeout', { timeout: settings.autoLockTimeout })}</Label>
                   <Slider
                     value={[settings.autoLockTimeout]}
-                    onValueChange={([value]) => updateSetting('autoLockTimeout', value)}
+                    disabled
+                    onValueChange={() => undefined}
                     min={5}
                     max={120}
                     step={5}
                   />
                   <p className="text-sm text-muted-foreground">
-                    {t('settings.security.autoLockTimeoutDesc')}
+                    {t('settings.security.autoLockTimeoutNotImplemented')}
                   </p>
                 </div>
               </CardContent>

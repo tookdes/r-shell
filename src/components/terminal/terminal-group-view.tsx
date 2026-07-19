@@ -61,9 +61,11 @@ export function TerminalGroupView({ groupId }: TerminalGroupViewProps) {
   const isLastGroup = Object.keys(state.groups).length === 1;
   const showWelcome = group.tabs.length === 0 && isLastGroup;
 
+  // Do not paint a full box border: split ResizableHandles are the only
+  // separators. A full border next to each handle produces 3 stacked lines.
   const containerClass = isActive
-    ? 'h-full w-full flex flex-col border-2 border-primary'
-    : 'h-full w-full flex flex-col border border-border';
+    ? 'h-full w-full flex flex-col bg-primary/5'
+    : 'h-full w-full flex flex-col';
 
   return (
     <section

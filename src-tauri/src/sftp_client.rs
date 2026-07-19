@@ -16,6 +16,16 @@ pub struct SftpConfig {
     pub port: u16,
     pub username: String,
     pub auth_method: SftpAuthMethod,
+    #[serde(default)]
+    pub connection_timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub keepalive_interval_secs: Option<u64>,
+    #[serde(default = "default_verify_host_key")]
+    pub verify_host_key: bool,
+}
+
+fn default_verify_host_key() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -68,27 +78,44 @@ impl StandaloneSftpClient {
 
     /// Establish an SSH connection, authenticate, and open the SFTP subsystem.
     pub async fn connect(config: &SftpConfig) -> Result<Self> {
+        // meatshell uses 30s keepalive on idle SFTP to avoid NAT/firewall drops.
+        let keepalive_interval_secs = config.keepalive_interval_secs.unwrap_or(30);
+        let keepalive_interval = if keepalive_interval_secs == 0 {
+            None
+        } else {
+            Some(Duration::from_secs(keepalive_interval_secs))
+        };
+
         let ssh_config = client::Config {
             preferred: russh::Preferred {
                 key: std::borrow::Cow::Borrowed(crate::ssh::PREFERRED_HOST_KEY_ALGOS),
                 ..russh::Preferred::DEFAULT
             },
+            keepalive_interval,
+            keepalive_max: 3,
             ..client::Config::default()
         };
-        let connection_timeout = Duration::from_secs(10);
+
+        let timeout_secs = config
+            .connection_timeout_secs
+            .filter(|value| *value > 0)
+            .unwrap_or(30);
+        let connection_timeout = Duration::from_secs(timeout_secs);
+        let handler = Client::new(config.host.clone(), config.port, config.verify_host_key);
 
         let mut ssh_session = tokio::time::timeout(
             connection_timeout,
             client::connect(
                 Arc::new(ssh_config),
                 (&config.host[..], config.port),
-                Client,
+                handler,
             ),
         )
         .await
         .map_err(|_| {
             anyhow::anyhow!(
-                "SFTP connection timed out after 10 seconds. Please check the host and network."
+                "SFTP connection timed out after {} seconds. Please check the host and network.",
+                timeout_secs
             )
         })?
         .map_err(|e| {

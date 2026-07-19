@@ -14,6 +14,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/
 import { Separator } from './ui/separator';
 import { ConnectionProfileManager, type ConnectionProfile } from '../lib/connection-profiles';
 import { ConnectionStorageManager } from '../lib/connection-storage';
+import { buildTransportInvokeFields } from '../lib/connection-transport-settings';
 import { toast } from 'sonner';
 import {
   Server,
@@ -307,6 +308,7 @@ export function ConnectionDialog({
             password: config.password || '',
             key_path: config.privateKeyPath || null,
             passphrase: config.passphrase || null,
+            ...buildTransportInvokeFields(),
           }
         }
       );
@@ -528,11 +530,9 @@ export function ConnectionDialog({
                         <SelectItem value="SSH">SSH</SelectItem>
                         <SelectItem value="SFTP">SFTP</SelectItem>
                         <SelectItem value="FTP">FTP</SelectItem>
-                        <SelectItem value="RDP">RDP</SelectItem>
-                        <SelectItem value="VNC">VNC</SelectItem>
-                        <SelectItem value="Telnet">Telnet</SelectItem>
-                        <SelectItem value="Raw">Raw</SelectItem>
-                        <SelectItem value="Serial">Serial</SelectItem>
+                        {/* Unimplemented protocols hidden until backends land.
+                            RDP/VNC/Telnet/Raw/Serial were previously selectable but
+                            either returned "not implemented" or incorrectly used SSH. */}
                       </SelectContent>
                     </Select>
                   </div>

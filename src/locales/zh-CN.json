@@ -75,7 +75,16 @@
     "systemMonitor": "系统监视器",
     "logMonitor": "日志监视器",
     "quickConnected": "快速连接成功",
-    "quickConnectedDesc": "已连接到 {{name}}"
+    "quickConnectedDesc": "已连接到 {{name}}",
+    "workspaceRestore": "工作区恢复",
+    "bringingConnectionsOnline": "正在恢复你的连接",
+    "preparingSavedConnections": "正在准备已保存的连接",
+    "reconnectingNamed": "正在重连 {{name}}",
+    "restoreHighlightCredentials": "凭据仅保存在本机",
+    "restoreHighlightAutoReconnect": "自动重连与重试",
+    "restoreHighlightMonitoring": "实时状态监控",
+    "unknownHost": "未知主机",
+    "restoreCancelled": "已取消会话恢复"
   },
   "connectionDialog": {
     "title": {
@@ -278,11 +287,13 @@
       "title": "安全设置",
       "desc": "配置安全选项和认证设置。",
       "hostKeyVerification": "主机密钥验证",
-      "hostKeyVerificationDesc": "验证 SSH 主机密钥以增强安全性",
+      "hostKeyVerificationNotImplemented": "尚未实现 — 当前会接受所有服务器密钥。",
+      "hostKeyVerificationDesc": "首次连接时信任主机密钥（TOFU）。密钥变更将被拒绝，确认服务器后需清除 known_hosts 条目。",
       "savePasswords": "保存密码",
       "savePasswordsDesc": "在本地存储密码（加密）",
       "autoLockTimeout": "自动锁定超时：{{timeout}}分钟",
-      "autoLockTimeoutDesc": "在此无活动时间后自动锁定应用程序"
+      "autoLockTimeoutDesc": "在此无活动时间后自动锁定应用程序",
+      "autoLockTimeoutNotImplemented": "尚未实现 — 自动锁定当前不可用。"
     },
     "interface": {
       "title": "界面设置",
@@ -457,7 +468,8 @@
     "toggleMonitorPanel": "切换监视器面板",
     "toggleZenMode": "切换禅定模式",
     "closeTab": "关闭标签页",
-    "window": "窗口"
+    "window": "窗口",
+    "notImplementedYet": "尚未实现"
   },
   "toolbar": {
     "newConnection": "新建连接",
@@ -579,7 +591,7 @@
       "syncDirectories": "同步目录（Ctrl+Shift+S）"
     },
     "selected": "已选择 {{count}} 项",
-    "loading": "加载中\u2026",
+    "loading": "加载中…",
     "downloadSelected": "下载选中的 {{count}} 项",
     "deleteFolderTitle": "删除文件夹？",
     "deleteFileTitle": "删除文件？",
@@ -760,17 +772,22 @@
     "cannotMoveIntoOwn": "无法将文件夹移动到其自身的子文件夹中",
     "movedConnection": "已将 \"{{source}}\" 移动到 \"{{target}}\"",
     "failedToMoveConnection": "移动连接失败",
+    "reorderedConnection": "已重新排序：{{name}}",
+    "sortByName": "按名称排序",
+    "sortedFolderByName": "已将「{{name}}」按名称排序",
+    "failedToSortFolder": "排序失败",
     "movedFolder": "已将文件夹 \"{{source}}\" 移动到 \"{{target}}\"",
     "failedToMoveFolder": "移动文件夹失败",
     "unableToMoveFolder": "无法将文件夹移动到新位置。",
     "noConnectionsYet": "暂无连接",
     "connectionDetails": "连接详情",
+    "dragToMove": "拖动以移动或排序",
     "noConnectionSelected": "未选择连接"
   },
   "filePanel": {
     "selectDirectory": "选择目录以查看其内容",
     "noFiles": "未找到文件",
-    "loading": "加载中...",
+    "loading": "加载中…",
     "dropFilesHint": "将文件拖放到此处以上传",
     "items": "{{count}} 项",
     "itemsSelected_one": "已选择 {{count}} 项",
@@ -790,7 +807,6 @@
       "noMatches": "无匹配",
       "emptyDirectory": "空目录"
     },
-    "loading": "加载中…",
     "column": {
       "name": "名称",
       "size": "大小",
@@ -870,6 +886,7 @@
     }
   },
   "statusBar": {
+    "pending": "等待中",
     "connected": "已连接",
     "disconnected": "未连接",
     "connecting": "连接中...",
@@ -977,7 +994,11 @@
     "autoReconnectFailed": "连接已断开，自动重连 {{count}} 次后仍然失败。按 R 重连，或右键选择“重新连接”。",
     "connectionFailedPermanently": "连接永久失败。按 R 重连，或右键选择“重新连接”。",
     "outputSaved": "终端输出已保存",
-    "failedToSaveOutput": "保存输出失败"
+    "failedToSaveOutput": "保存输出失败",
+    "previousSessionLost": "先前会话已丢失，已启动新的 shell 会话。",
+    "ptyStarted": "PTY 连接已启动",
+    "interactiveCommandsHint": "现在可以使用交互式命令：vim、less、more、top 等。",
+    "autoReconnecting": "连接已断开。将在 {{seconds}} 秒后重连（第 {{attempt}}/{{max}} 次）..."
   },
   "systemMonitor": {
     "systemOverview": "系统概览",

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { applyLanguageFromPreference } from './lib/i18n';
 import { invoke } from '@tauri-apps/api/core';
@@ -16,9 +16,11 @@ import { UpdateChecker } from './components/update-checker';
 import { ActiveConnectionsManager, ConnectionStorageManager } from './lib/connection-storage';
 import { isDesktopProtocol } from './lib/protocol-config';
 import { registerRestoration, clearAllRestorations } from './lib/restoration-manager';
+import { buildTransportInvokeFields, loadConnectionTransportSettings } from './lib/connection-transport-settings';
 import { useLayout, LayoutProvider } from './lib/layout-context';
 import {
   APP_SETTINGS_CHANGED_EVENT,
+  APP_SETTINGS_STORAGE_KEY,
   createLayoutShortcuts,
   createSplitViewShortcuts,
   loadKeyboardShortcutSettings,
@@ -66,6 +68,15 @@ function AppContent() {
   const [keyboardShortcutSettings, setKeyboardShortcutSettings] = useState<SplitViewShortcutBindings>(
     () => loadKeyboardShortcutSettings(),
   );
+  const [showStatusBar, setShowStatusBar] = useState(() => {
+    try {
+      const raw = localStorage.getItem(APP_SETTINGS_STORAGE_KEY);
+      if (!raw) return true;
+      return (JSON.parse(raw) as { showStatusBar?: unknown }).showStatusBar !== false;
+    } catch {
+      return true;
+    }
+  });
 
   // Right sidebar tab & log monitor integration
   const [rightSidebarTab, setRightSidebarTab] = useState("monitor");
@@ -76,6 +87,7 @@ function AppContent() {
   const [isRestoring, setIsRestoring] = useState(false);
   const [restoringProgress, setRestoringProgress] = useState({ current: 0, total: 0 });
   const [currentRestoreTarget, setCurrentRestoreTarget] = useState<{ name: string; host?: string; username?: string } | null>(null);
+  const restoreCancelRef = useRef(false);
 
   // Layout management
   const {
@@ -84,6 +96,8 @@ function AppContent() {
     toggleRightSidebar,
     toggleBottomPanel,
     toggleZenMode,
+    setLeftSidebarVisible,
+    setRightSidebarVisible,
     setLeftSidebarSize,
     setRightSidebarSize,
     setBottomPanelSize,
@@ -105,13 +119,45 @@ function AppContent() {
       setKeyboardShortcutSettings(loadKeyboardShortcutSettings());
     };
 
-    window.addEventListener(APP_SETTINGS_CHANGED_EVENT, refreshKeyboardShortcutSettings);
-    window.addEventListener('storage', refreshKeyboardShortcutSettings);
-    return () => {
-      window.removeEventListener(APP_SETTINGS_CHANGED_EVENT, refreshKeyboardShortcutSettings);
-      window.removeEventListener('storage', refreshKeyboardShortcutSettings);
+    const refreshInterfaceSettings = () => {
+      try {
+        const raw = localStorage.getItem(APP_SETTINGS_STORAGE_KEY);
+        if (!raw) {
+          setShowStatusBar(true);
+          return;
+        }
+        const parsed = JSON.parse(raw) as {
+          showStatusBar?: unknown;
+          showConnectionManager?: unknown;
+          showSystemMonitor?: unknown;
+        };
+        setShowStatusBar(parsed.showStatusBar !== false);
+        if (typeof parsed.showConnectionManager === 'boolean') {
+          setLeftSidebarVisible(parsed.showConnectionManager);
+        }
+        if (typeof parsed.showSystemMonitor === 'boolean') {
+          setRightSidebarVisible(parsed.showSystemMonitor);
+        }
+      } catch {
+        setShowStatusBar(true);
+      }
     };
-  }, []);
+
+    const refreshFromSettings = () => {
+      refreshKeyboardShortcutSettings();
+      refreshInterfaceSettings();
+    };
+
+    window.addEventListener(APP_SETTINGS_CHANGED_EVENT, refreshFromSettings);
+    window.addEventListener('storage', refreshFromSettings);
+    return () => {
+      window.removeEventListener(APP_SETTINGS_CHANGED_EVENT, refreshFromSettings);
+      window.removeEventListener('storage', refreshFromSettings);
+    };
+  }, [setLeftSidebarVisible, setRightSidebarVisible]);
+
+  // Filled after handleTabClose is defined; used by keyboard shortcuts.
+  const handleTabCloseRef = useRef<(tabId: string) => void | Promise<void>>(async () => {});
 
   // Keyboard shortcuts: layout + split view
   const splitViewShortcuts = useMemo(() => {
@@ -135,7 +181,7 @@ function AppContent() {
         },
         closeTab: () => {
           if (activeGroup && activeGroup.activeTabId) {
-            dispatch({ type: 'REMOVE_TAB', groupId: activeGroup.id, tabId: activeGroup.activeTabId });
+            void handleTabCloseRef.current(activeGroup.activeTabId);
           }
         },
         nextTab: () => {
@@ -197,10 +243,14 @@ function AppContent() {
       ]);
     }
 
-    const CONNECT_TIMEOUT_MS = 15_000; // 15 s per backend connect call
-    const OVERALL_RESTORE_TIMEOUT_MS = 60_000; // 60 s for the entire restore
+    const transportSettings = loadConnectionTransportSettings();
+    // Prefer the user-configured connection timeout (seconds) for restore attempts.
+    const CONNECT_TIMEOUT_MS = Math.max(5, transportSettings.connectionTimeout) * 1000;
+    const OVERALL_RESTORE_TIMEOUT_MS = Math.max(60_000, CONNECT_TIMEOUT_MS * 4);
+    const restoreCancelledRef = restoreCancelRef;
 
     const restoreConnections = async () => {
+      restoreCancelledRef.current = false;
       const activeConnections = ActiveConnectionsManager.getActiveConnections();
 
       if (activeConnections.length === 0) {
@@ -225,6 +275,10 @@ function AppContent() {
       let failedCount = 0;
 
       for (let i = 0; i < sortedConnections.length; i++) {
+        if (restoreCancelledRef.current) {
+          console.log('Session restore cancelled by user');
+          break;
+        }
         const activeConn = sortedConnections[i];
         const connectionIdToLoad = activeConn.originalConnectionId || activeConn.connectionId;
         const connectionData = ConnectionStorageManager.getConnection(connectionIdToLoad);
@@ -322,6 +376,7 @@ function AppContent() {
                     password: connectionData.password || '',
                     key_path: connectionData.privateKeyPath || null,
                     passphrase: connectionData.passphrase || null,
+                    ...buildTransportInvokeFields(),
                   }
                 }),
                 CONNECT_TIMEOUT_MS,
@@ -383,6 +438,7 @@ function AppContent() {
                     password: connectionData.password || '',
                     key_path: connectionData.privateKeyPath || null,
                     passphrase: connectionData.passphrase || null,
+                    ...buildTransportInvokeFields(),
                   }
                 }
               ),
@@ -543,6 +599,7 @@ function AppContent() {
                 password: connectionData.password || '',
                 key_path: connectionData.privateKeyPath || null,
                 passphrase: connectionData.passphrase || null,
+                    ...buildTransportInvokeFields(),
               }
             });
           } else {
@@ -581,6 +638,7 @@ function AppContent() {
                 password: connectionData.password || '',
                 key_path: connectionData.privateKeyPath || null,
                 passphrase: connectionData.passphrase || null,
+                    ...buildTransportInvokeFields(),
               }
             }
           );
@@ -647,28 +705,46 @@ function AppContent() {
     }
   }, [state.groups, dispatch]);
 
-  const _handleTabClose = useCallback(async (tabId: string) => {
-    // Find which group contains this tab and remove it
+  const handleTabClose = useCallback(async (tabId: string) => {
+    // Find which group contains this tab, tear down backend resources, then remove it.
     for (const group of Object.values(state.groups)) {
       const tab = group.tabs.find(t => t.id === tabId);
-      if (tab) {
-        // Disconnect SFTP/FTP sessions when closing file-browser tabs
+      if (!tab) continue;
+
+      try {
         if (tab.tabType === 'file-browser') {
-          try {
-            if (tab.protocol === 'SFTP') {
-              await invoke('sftp_standalone_disconnect', { connection_id: tabId });
-            } else if (tab.protocol === 'FTP') {
-              await invoke('ftp_disconnect', { connection_id: tabId });
-            }
-          } catch {
-            // Ignore disconnect errors on tab close
+          if (tab.protocol === 'SFTP') {
+            await invoke('sftp_standalone_disconnect', { connection_id: tabId });
+          } else if (tab.protocol === 'FTP') {
+            await invoke('ftp_disconnect', { connection_id: tabId });
           }
+        } else if (tab.tabType === 'desktop') {
+          try {
+            await invoke('desktop_disconnect', { connection_id: tabId });
+          } catch {
+            // Desktop backends may not be implemented for every protocol.
+          }
+        } else {
+          // SSH terminal (default) — also cancels any open PTY on the backend.
+          await invoke('ssh_disconnect', { connection_id: tabId });
         }
-        dispatch({ type: 'REMOVE_TAB', groupId: group.id, tabId });
-        break;
+      } catch {
+        // Ignore disconnect errors on tab close; still remove the tab UI.
       }
+
+      dispatch({ type: 'REMOVE_TAB', groupId: group.id, tabId });
+      break;
     }
   }, [state.groups, dispatch]);
+
+  handleTabCloseRef.current = handleTabClose;
+
+  const closeMultipleTabs = useCallback(async (tabIds: string[]) => {
+    for (const tabId of tabIds) {
+      await handleTabClose(tabId);
+    }
+  }, [handleTabClose]);
+
 
   const handleNewTab = useCallback(() => {
     setConnectionDialogOpen(true);
@@ -735,6 +811,7 @@ function AppContent() {
                 password: connectionData.password || '',
                 key_path: connectionData.privateKeyPath || null,
                 passphrase: connectionData.passphrase || null,
+                    ...buildTransportInvokeFields(),
               }
             });
           } else {
@@ -774,6 +851,7 @@ function AppContent() {
               password: connectionData.password || '',
               key_path: connectionData.privateKeyPath || null,
               passphrase: connectionData.passphrase || null,
+                    ...buildTransportInvokeFields(),
             }
           }
         );
@@ -876,6 +954,7 @@ function AppContent() {
               password: connectionData.password || '',
               key_path: connectionData.privateKeyPath || null,
               passphrase: connectionData.passphrase || null,
+                    ...buildTransportInvokeFields(),
             }
           });
         } else {
@@ -919,6 +998,7 @@ function AppContent() {
               password: connectionData.password || '',
               key_path: connectionData.privateKeyPath || null,
               passphrase: connectionData.passphrase || null,
+                    ...buildTransportInvokeFields(),
             }
           }
         );
@@ -1052,6 +1132,7 @@ function AppContent() {
                 password: config.password || '',
                 key_path: config.privateKeyPath || null,
                 passphrase: config.passphrase || null,
+                    ...buildTransportInvokeFields(),
               }
             });
           } else {
@@ -1161,6 +1242,7 @@ function AppContent() {
                 password: config.password || '',
                 key_path: config.privateKeyPath || null,
                 passphrase: config.passphrase || null,
+                    ...buildTransportInvokeFields(),
               }
             });
           } else {
@@ -1214,7 +1296,17 @@ function AppContent() {
           break;
         case 'close_connection':
           if (activeGroup && activeGroup.activeTabId) {
-            dispatch({ type: 'REMOVE_TAB', groupId: activeGroup.id, tabId: activeGroup.activeTabId });
+            void handleTabCloseRef.current(activeGroup.activeTabId);
+          }
+          break;
+        case 'reconnect':
+          if (activeTab) {
+            void handleReconnect(activeTab.id);
+          }
+          break;
+        case 'disconnect':
+          if (activeGroup && activeGroup.activeTabId) {
+            void handleTabCloseRef.current(activeGroup.activeTabId);
           }
           break;
         case 'clone_tab':
@@ -1364,6 +1456,7 @@ function AppContent() {
               password: connectionData.password || '',
               key_path: connectionData.privateKeyPath || null,
               passphrase: connectionData.passphrase || null,
+                    ...buildTransportInvokeFields(),
             }
           }
         );
@@ -1428,11 +1521,11 @@ function AppContent() {
 
   const restoreHighlights = useMemo(() => (
     [
-      { icon: ShieldCheck, label: 'Secrets stay encrypted locally' },
-      { icon: PlugZap, label: 'Auto reconnect with retry' },
-      { icon: Activity, label: 'Live status monitoring' },
+      { icon: ShieldCheck, label: t('app.restoreHighlightCredentials') },
+      { icon: PlugZap, label: t('app.restoreHighlightAutoReconnect') },
+      { icon: Activity, label: t('app.restoreHighlightMonitoring') },
     ]
-  ), []);
+  ), [t]);
 
   // Check if there are any tabs across all groups
   const hasAnyTabs = allTabs.length > 0;
@@ -1458,8 +1551,8 @@ function AppContent() {
                 <History className="h-6 w-6" />
               </div>
               <div>
-                <p className="text-xs uppercase tracking-[0.25em] text-muted-foreground">Workspace Restore</p>
-                <h3 className="mt-1 text-2xl font-semibold text-foreground">Bringing your connections back online</h3>
+                <p className="text-xs uppercase tracking-[0.25em] text-muted-foreground">{t('app.workspaceRestore')}</p>
+                <h3 className="mt-1 text-2xl font-semibold text-foreground">{t('app.bringingConnectionsOnline')}</h3>
               </div>
             </div>
 
@@ -1467,8 +1560,8 @@ function AppContent() {
               <div className="flex items-center justify-between text-sm text-muted-foreground" aria-live="polite">
                 <span>
                   {currentRestoreTarget
-                    ? `Reconnecting ${currentRestoreTarget.name}`
-                    : 'Preparing saved connections'}
+                    ? t('app.reconnectingNamed', { name: currentRestoreTarget.name })
+                    : t('app.preparingSavedConnections')}
                 </span>
                 <span className="font-semibold text-foreground">
                   {restoringProgress.current} / {restoringProgress.total}
@@ -1491,7 +1584,7 @@ function AppContent() {
                     <p className="text-sm font-medium text-foreground">{currentRestoreTarget.name}</p>
                     <p className="text-xs text-muted-foreground">
                       {currentRestoreTarget.username ? `${currentRestoreTarget.username}@` : ''}
-                      {currentRestoreTarget.host || 'unknown host'}
+                      {currentRestoreTarget.host || t('app.unknownHost')}
                     </p>
                   </div>
                 </div>
@@ -1510,6 +1603,23 @@ function AppContent() {
                   </div>
                 ))}
               </div>
+
+              <div className="flex justify-end pt-2">
+                <button
+                  type="button"
+                  className="rounded-md border px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+                  onClick={() => {
+                    restoreCancelRef.current = true;
+                    setIsRestoring(false);
+                    setCurrentRestoreTarget(null);
+                    setRestoringProgress({ current: 0, total: 0 });
+                    clearAllRestorations();
+                    toast.message(t('app.restoreCancelled'));
+                  }}
+                >
+                  {t('common.cancel')}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1521,7 +1631,7 @@ function AppContent() {
         onNewTab={handleNewTab}
         onCloseConnection={() => {
           if (activeGroup && activeGroup.activeTabId) {
-            dispatch({ type: 'REMOVE_TAB', groupId: activeGroup.id, tabId: activeGroup.activeTabId });
+            void handleTabCloseRef.current(activeGroup.activeTabId);
           }
         }}
         onNextTab={() => {
@@ -1607,7 +1717,7 @@ function AppContent() {
                 <ResizablePanelGroup direction="vertical" className="flex-1">
                   {/* Terminal Grid Panel */}
                   <ResizablePanel id="terminal-grid" order={1} defaultSize={layout.bottomPanelVisible ? 70 : 100} minSize={30}>
-                    <TerminalCallbacksProvider value={{ onDuplicateTab: handleDuplicateTab, onNewTab: handleNewTab, onReconnectTab: handleReconnect }}>
+                    <TerminalCallbacksProvider value={{ onDuplicateTab: handleDuplicateTab, onNewTab: handleNewTab, onReconnectTab: handleReconnect, onCloseTab: handleTabClose, onCloseTabs: closeMultipleTabs }}>
                       <ErrorBoundary label="Terminal">
                         <GridRenderer node={state.gridLayout} path={[]} />
                       </ErrorBoundary>
@@ -1694,7 +1804,7 @@ function AppContent() {
         </ResizablePanelGroup>
       </div>
 
-      <StatusBar activeConnection={statusBarConnection} />
+      {showStatusBar ? <StatusBar activeConnection={statusBarConnection} /> : null}
 
       {/* Modals */}
       <ConnectionDialog

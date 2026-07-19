@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { LayoutConfig, LayoutManager } from './layout-config';
 
 interface LayoutContextType {
@@ -7,6 +7,8 @@ interface LayoutContextType {
   toggleRightSidebar: () => void;
   toggleBottomPanel: () => void;
   toggleZenMode: () => void;
+  setLeftSidebarVisible: (visible: boolean) => void;
+  setRightSidebarVisible: (visible: boolean) => void;
   setLeftSidebarSize: (size: number) => void;
   setRightSidebarSize: (size: number) => void;
   setBottomPanelSize: (size: number) => void;
@@ -18,6 +20,11 @@ const LayoutContext = createContext<LayoutContextType | undefined>(undefined);
 
 export function LayoutProvider({ children }: { children: React.ReactNode }) {
   const [layout, setLayout] = useState<LayoutConfig>(() => LayoutManager.loadLayout());
+  const preZenVisibilityRef = useRef<{
+    leftSidebarVisible: boolean;
+    rightSidebarVisible: boolean;
+    bottomPanelVisible: boolean;
+  } | null>(null);
 
   // Save layout whenever it changes
   useEffect(() => {
@@ -46,16 +53,40 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const toggleZenMode = useCallback(() => {
-    setLayout(prev => {
-      const newZenMode = !prev.zenMode;
+    setLayout((previous) => {
+      if (!previous.zenMode) {
+        preZenVisibilityRef.current = {
+          leftSidebarVisible: previous.leftSidebarVisible,
+          rightSidebarVisible: previous.rightSidebarVisible,
+          bottomPanelVisible: previous.bottomPanelVisible,
+        };
+        return {
+          ...previous,
+          zenMode: true,
+          leftSidebarVisible: false,
+          rightSidebarVisible: false,
+          bottomPanelVisible: false,
+        };
+      }
+
+      const restored = preZenVisibilityRef.current;
+      preZenVisibilityRef.current = null;
       return {
-        ...prev,
-        zenMode: newZenMode,
-        leftSidebarVisible: !newZenMode && prev.leftSidebarSize > 0,
-        rightSidebarVisible: !newZenMode && prev.rightSidebarSize > 0,
-        bottomPanelVisible: !newZenMode && prev.bottomPanelSize > 0,
+        ...previous,
+        zenMode: false,
+        leftSidebarVisible: restored?.leftSidebarVisible ?? previous.leftSidebarVisible,
+        rightSidebarVisible: restored?.rightSidebarVisible ?? previous.rightSidebarVisible,
+        bottomPanelVisible: restored?.bottomPanelVisible ?? previous.bottomPanelVisible,
       };
     });
+  }, []);
+
+  const setLeftSidebarVisible = useCallback((visible: boolean) => {
+    setLayout((previous) => ({ ...previous, leftSidebarVisible: visible }));
+  }, []);
+
+  const setRightSidebarVisible = useCallback((visible: boolean) => {
+    setLayout((previous) => ({ ...previous, rightSidebarVisible: visible }));
   }, []);
 
   const setLeftSidebarSize = useCallback((size: number) => {
@@ -88,6 +119,8 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
         toggleRightSidebar,
         toggleBottomPanel,
         toggleZenMode,
+        setLeftSidebarVisible,
+        setRightSidebarVisible,
         setLeftSidebarSize,
         setRightSidebarSize,
         setBottomPanelSize,
