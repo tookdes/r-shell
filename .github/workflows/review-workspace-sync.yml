@@ -26,8 +26,15 @@ jobs:
         if: always()
         continue-on-error: true
         run: |
-          python3 scripts/review-workspace-sync-fix.py
-          python3 scripts/review-workspace-sync-fix-2.py
+          set +e
+          {
+            python3 scripts/review-workspace-sync-fix.py
+            python3 scripts/review-workspace-sync-fix-2.py
+            python3 scripts/review-workspace-sync-fix-3.py
+          } > /tmp/review-fixes.log 2>&1
+          status=$?
+          tail -n 300 /tmp/review-fixes.log > .review-fixes.log
+          exit $status
 
       - name: Setup Node.js
         id: node
@@ -77,9 +84,15 @@ jobs:
         if: always()
         continue-on-error: true
         run: |
-          pnpm build
-          pnpm test
-          pnpm i18n:check
+          set +e
+          {
+            pnpm build
+            pnpm test
+            pnpm i18n:check
+          } > /tmp/review-frontend.log 2>&1
+          status=$?
+          tail -n 500 /tmp/review-frontend.log > .review-frontend.log
+          exit $status
 
       - name: Rust checks
         id: rust
@@ -87,9 +100,15 @@ jobs:
         continue-on-error: true
         working-directory: src-tauri
         run: |
-          cargo fmt --check
-          cargo test
-          cargo clippy -- -D warnings
+          set +e
+          {
+            cargo fmt --check
+            cargo test
+            cargo clippy -- -D warnings
+          } > /tmp/review-rust.log 2>&1
+          status=$?
+          tail -n 700 /tmp/review-rust.log > ../.review-rust.log
+          exit $status
 
       - name: Record and commit review result
         if: always()
