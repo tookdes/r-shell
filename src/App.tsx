@@ -1200,8 +1200,15 @@ function AppContent() {
                 auth_method: config.authMethod || 'password',
                 password: config.password || '',
                 key_path: config.privateKeyPath || null,
+                key_data: config.privateKeyData || null,
                 passphrase: config.passphrase || null,
-                    ...buildTransportInvokeFields(),
+                ...buildTransportInvokeFields(),
+                proxy_type: config.proxyType && config.proxyType !== 'none' ? config.proxyType : null,
+                proxy_host: config.proxyHost || null,
+                proxy_port: config.proxyPort || null,
+                proxy_username: config.proxyUsername || null,
+                proxy_password: config.proxyPassword || null,
+                startup_command: config.startupCommand || null,
               }
             });
           } else {
@@ -1310,8 +1317,15 @@ function AppContent() {
                 auth_method: config.authMethod || 'password',
                 password: config.password || '',
                 key_path: config.privateKeyPath || null,
+                key_data: config.privateKeyData || null,
                 passphrase: config.passphrase || null,
-                    ...buildTransportInvokeFields(),
+                ...buildTransportInvokeFields(),
+                proxy_type: config.proxyType && config.proxyType !== 'none' ? config.proxyType : null,
+                proxy_host: config.proxyHost || null,
+                proxy_port: config.proxyPort || null,
+                proxy_username: config.proxyUsername || null,
+                proxy_password: config.proxyPassword || null,
+                startup_command: config.startupCommand || null,
               }
             });
           } else {
@@ -1408,31 +1422,51 @@ function AppContent() {
     return () => { unlistenPromise.then(fn => fn()); };
   }, [activeGroup, activeTab, handleNewTab, handleOpenSettings, handleDuplicateTab, dispatch]);
 
-  const handleEditConnection = useCallback((connection: ConnectionNode) => {
-    if (connection.type === 'connection') {
-      const connectionData = ConnectionStorageManager.getConnection(connection.id);
-      if (connectionData) {
-        setEditingConnection({
-          id: connectionData.id,
-          name: connectionData.name,
-          protocol: connectionData.protocol as ConnectionConfig['protocol'],
-          host: connectionData.host,
-          port: connectionData.port,
-          username: connectionData.username,
-          authMethod: connectionData.authMethod || 'password',
-          password: connectionData.password,
-          privateKeyPath: connectionData.privateKeyPath,
-          passphrase: connectionData.passphrase,
-          domain: connectionData.domain,
-          rdpResolution: connectionData.rdpResolution as ConnectionConfig['rdpResolution'],
-          vncColorDepth: connectionData.vncColorDepth as ConnectionConfig['vncColorDepth'],
-        });
-        setConnectionDialogOpen(true);
-      } else {
-        toast.error('Connection Not Found', {
-          description: 'The connection data could not be loaded.',
-        });
-      }
+  const handleEditConnection = useCallback(async (connection: ConnectionNode) => {
+    if (connection.type !== 'connection') return;
+
+    const connectionDataRaw = ConnectionStorageManager.getConnection(connection.id);
+    if (!connectionDataRaw) {
+      toast.error('Connection Not Found', {
+        description: 'The connection data could not be loaded.',
+      });
+      return;
+    }
+
+    try {
+      const connectionData = mergeWithSessionCredentials(
+        connection.id,
+        await decryptConnectionSecrets(connectionDataRaw),
+      );
+      rememberSessionCredentials(connection.id, connectionData);
+      setEditingConnection({
+        id: connectionData.id,
+        name: connectionData.name,
+        protocol: connectionData.protocol as ConnectionConfig['protocol'],
+        host: connectionData.host,
+        port: connectionData.port,
+        username: connectionData.username,
+        authMethod: connectionData.authMethod || 'password',
+        password: connectionData.password,
+        privateKeyPath: connectionData.privateKeyPath,
+        privateKeyData: connectionData.privateKeyData,
+        passphrase: connectionData.passphrase,
+        startupCommand: connectionData.startupCommand,
+        proxyType: connectionData.proxyType,
+        proxyHost: connectionData.proxyHost,
+        proxyPort: connectionData.proxyPort,
+        proxyUsername: connectionData.proxyUsername,
+        proxyPassword: connectionData.proxyPassword,
+        ftpsEnabled: connectionData.ftpsEnabled,
+        domain: connectionData.domain,
+        rdpResolution: connectionData.rdpResolution as ConnectionConfig['rdpResolution'],
+        vncColorDepth: connectionData.vncColorDepth as ConnectionConfig['vncColorDepth'],
+      });
+      setConnectionDialogOpen(true);
+    } catch (error) {
+      toast.error('Unable to decrypt connection credentials', {
+        description: error instanceof Error ? error.message : String(error),
+      });
     }
   }, []);
 

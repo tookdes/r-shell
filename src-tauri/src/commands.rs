@@ -442,51 +442,48 @@ pub async fn sftp_download_file(
     request: FileTransferRequest,
     state: State<'_, Arc<ConnectionManager>>,
 ) -> Result<FileTransferResponse, String> {
+    let cancel = state.transfer_token(&request.connection_id).await;
     let connection = state
         .get_connection(&request.connection_id)
         .await
         .ok_or("Connection not found")?;
-
     let client = connection.read().await;
 
-    // If local_path is empty, download to memory (for browser download)
-    if request.local_path.is_empty() {
-        match client.download_file_to_memory(&request.remote_path).await {
-            Ok(data) => {
-                let bytes = data.len() as u64;
-                Ok(FileTransferResponse {
-                    success: true,
-                    bytes_transferred: Some(bytes),
-                    data: Some(data),
-                    error: None,
+    let transfer = async {
+        if request.local_path.is_empty() {
+            client
+                .download_file_to_memory(&request.remote_path)
+                .await
+                .map(|data| {
+                    let bytes = data.len() as u64;
+                    (bytes, Some(data))
                 })
-            }
-            Err(e) => Ok(FileTransferResponse {
-                success: false,
-                bytes_transferred: None,
-                data: None,
-                error: Some(e.to_string()),
-            }),
+        } else {
+            client
+                .download_file(&request.remote_path, &request.local_path)
+                .await
+                .map(|bytes| (bytes, None))
         }
-    } else {
-        // Download to local file
-        match client
-            .download_file(&request.remote_path, &request.local_path)
-            .await
-        {
-            Ok(bytes) => Ok(FileTransferResponse {
-                success: true,
-                bytes_transferred: Some(bytes),
-                data: None,
-                error: None,
-            }),
-            Err(e) => Ok(FileTransferResponse {
-                success: false,
-                bytes_transferred: None,
-                data: None,
-                error: Some(e.to_string()),
-            }),
-        }
+    };
+
+    let result = tokio::select! {
+        _ = cancel.cancelled() => Err(anyhow::anyhow!("Transfer cancelled")),
+        result = transfer => result,
+    };
+
+    match result {
+        Ok((bytes, data)) => Ok(FileTransferResponse {
+            success: true,
+            bytes_transferred: Some(bytes),
+            data,
+            error: None,
+        }),
+        Err(error) => Ok(FileTransferResponse {
+            success: false,
+            bytes_transferred: None,
+            data: None,
+            error: Some(error.to_string()),
+        }),
     }
 }
 
@@ -496,22 +493,28 @@ pub async fn sftp_upload_file(
     request: FileTransferRequest,
     state: State<'_, Arc<ConnectionManager>>,
 ) -> Result<FileTransferResponse, String> {
+    let cancel = state.transfer_token(&request.connection_id).await;
     let connection = state
         .get_connection(&request.connection_id)
         .await
         .ok_or("Connection not found")?;
-
     let client = connection.read().await;
 
-    // If data is provided, write directly; otherwise read from local_path
-    let result = if let Some(data) = &request.data {
-        client
-            .upload_file_from_bytes(data, &request.remote_path)
-            .await
-    } else {
-        client
-            .upload_file(&request.local_path, &request.remote_path)
-            .await
+    let transfer = async {
+        if let Some(data) = &request.data {
+            client
+                .upload_file_from_bytes(data, &request.remote_path)
+                .await
+        } else {
+            client
+                .upload_file(&request.local_path, &request.remote_path)
+                .await
+        }
+    };
+
+    let result = tokio::select! {
+        _ = cancel.cancelled() => Err(anyhow::anyhow!("Transfer cancelled")),
+        result = transfer => result,
     };
 
     match result {
@@ -521,11 +524,11 @@ pub async fn sftp_upload_file(
             data: None,
             error: None,
         }),
-        Err(e) => Ok(FileTransferResponse {
+        Err(error) => Ok(FileTransferResponse {
             success: false,
             bytes_transferred: None,
             data: None,
-            error: Some(e.to_string()),
+            error: Some(error.to_string()),
         }),
     }
 }
@@ -597,7 +600,11 @@ pub async fn rename_file(
         .ok_or("Connection not found")?;
 
     let client = connection.read().await;
-    let command = format!("mv '{}' '{}'", shell_escape_single_quoted(&old_path), shell_escape_single_quoted(&new_path));
+    let command = format!(
+        "mv '{}' '{}'",
+        shell_escape_single_quoted(&old_path),
+        shell_escape_single_quoted(&new_path)
+    );
 
     match client.execute_command(&command).await {
         Ok(_) => Ok(true),
@@ -674,7 +681,10 @@ pub async fn read_remote_file_base64(
 
     // Refuse very large files to avoid memory / performance issues
     let escaped_path = shell_escape_single_quoted(&path);
-    let size_cmd = format!("stat -c '%s' '{}' 2>/dev/null || stat -f '%z' '{}'", escaped_path, escaped_path);
+    let size_cmd = format!(
+        "stat -c '%s' '{}' 2>/dev/null || stat -f '%z' '{}'",
+        escaped_path, escaped_path
+    );
     let size_str = client
         .execute_command(&size_cmd)
         .await
@@ -702,11 +712,7 @@ pub async fn read_remote_file_base64(
         .map_err(|e| e.to_string())?;
 
     // Infer MIME type from extension
-    let ext = path
-        .rsplit('.')
-        .next()
-        .unwrap_or("")
-        .to_lowercase();
+    let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
     let mime = match ext.as_str() {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
@@ -740,7 +746,11 @@ pub async fn copy_file(
         .ok_or("Connection not found")?;
 
     let client = connection.read().await;
-    let command = format!("cp -r '{}' '{}'", shell_escape_single_quoted(&source_path), shell_escape_single_quoted(&dest_path));
+    let command = format!(
+        "cp -r '{}' '{}'",
+        shell_escape_single_quoted(&source_path),
+        shell_escape_single_quoted(&dest_path)
+    );
 
     match client.execute_command(&command).await {
         Ok(_) => Ok(true),
@@ -2385,36 +2395,41 @@ pub async fn download_remote_file(
     local_path: String,
     state: State<'_, Arc<ConnectionManager>>,
 ) -> Result<FileTransferResponse, String> {
+    let cancel = state.transfer_token(&connection_id).await;
     let conn_type = state.get_connection_type(&connection_id).await;
 
-    let result = match conn_type.as_deref() {
-        Some("SFTP") => {
-            let sftp_map = state.get_sftp_connection().await;
-            let connections = sftp_map.read().await;
-            let client = connections
-                .get(&connection_id)
-                .ok_or("SFTP connection not found".to_string())?;
-            client.download_file(&remote_path, &local_path).await
+    let transfer = async {
+        match conn_type.as_deref() {
+            Some("SFTP") => {
+                let sftp_map = state.get_sftp_connection().await;
+                let connections = sftp_map.read().await;
+                let client = connections
+                    .get(&connection_id)
+                    .ok_or_else(|| anyhow::anyhow!("SFTP connection not found"))?;
+                client.download_file(&remote_path, &local_path).await
+            }
+            Some("FTP") => {
+                let ftp_map = state.get_ftp_connection().await;
+                let mut connections = ftp_map.write().await;
+                let client = connections
+                    .get_mut(&connection_id)
+                    .ok_or_else(|| anyhow::anyhow!("FTP connection not found"))?;
+                client.download_file(&remote_path, &local_path).await
+            }
+            Some(other) => Err(anyhow::anyhow!("Unsupported protocol: {}", other)),
+            None => {
+                let connection = state.get_connection(&connection_id).await.ok_or_else(|| {
+                    anyhow::anyhow!("No connection found for '{}'", connection_id)
+                })?;
+                let client = connection.read().await;
+                client.download_file(&remote_path, &local_path).await
+            }
         }
-        Some("FTP") => {
-            let ftp_map = state.get_ftp_connection().await;
-            let mut connections = ftp_map.write().await;
-            let client = connections
-                .get_mut(&connection_id)
-                .ok_or("FTP connection not found".to_string())?;
-            client.download_file(&remote_path, &local_path).await
-        }
-        Some(other) => return Err(format!("Unsupported protocol: {}", other)),
-        None => {
-            // Fallback: try SSH connection (integrated file browser uses SSH connections
-            // which are not registered in connection_types)
-            let connection = state
-                .get_connection(&connection_id)
-                .await
-                .ok_or_else(|| format!("No connection found for '{}'", connection_id))?;
-            let client = connection.read().await;
-            client.download_file(&remote_path, &local_path).await
-        }
+    };
+
+    let result = tokio::select! {
+        _ = cancel.cancelled() => Err(anyhow::anyhow!("Transfer cancelled")),
+        result = transfer => result,
     };
 
     match result {
@@ -2424,11 +2439,11 @@ pub async fn download_remote_file(
             data: None,
             error: None,
         }),
-        Err(e) => Ok(FileTransferResponse {
+        Err(error) => Ok(FileTransferResponse {
             success: false,
             bytes_transferred: None,
             data: None,
-            error: Some(e.to_string()),
+            error: Some(error.to_string()),
         }),
     }
 }
@@ -2440,36 +2455,41 @@ pub async fn upload_remote_file(
     remote_path: String,
     state: State<'_, Arc<ConnectionManager>>,
 ) -> Result<FileTransferResponse, String> {
+    let cancel = state.transfer_token(&connection_id).await;
     let conn_type = state.get_connection_type(&connection_id).await;
 
-    let result = match conn_type.as_deref() {
-        Some("SFTP") => {
-            let sftp_map = state.get_sftp_connection().await;
-            let connections = sftp_map.read().await;
-            let client = connections
-                .get(&connection_id)
-                .ok_or("SFTP connection not found".to_string())?;
-            client.upload_file(&local_path, &remote_path).await
+    let transfer = async {
+        match conn_type.as_deref() {
+            Some("SFTP") => {
+                let sftp_map = state.get_sftp_connection().await;
+                let connections = sftp_map.read().await;
+                let client = connections
+                    .get(&connection_id)
+                    .ok_or_else(|| anyhow::anyhow!("SFTP connection not found"))?;
+                client.upload_file(&local_path, &remote_path).await
+            }
+            Some("FTP") => {
+                let ftp_map = state.get_ftp_connection().await;
+                let mut connections = ftp_map.write().await;
+                let client = connections
+                    .get_mut(&connection_id)
+                    .ok_or_else(|| anyhow::anyhow!("FTP connection not found"))?;
+                client.upload_file(&local_path, &remote_path).await
+            }
+            Some(other) => Err(anyhow::anyhow!("Unsupported protocol: {}", other)),
+            None => {
+                let connection = state.get_connection(&connection_id).await.ok_or_else(|| {
+                    anyhow::anyhow!("No connection found for '{}'", connection_id)
+                })?;
+                let client = connection.read().await;
+                client.upload_file(&local_path, &remote_path).await
+            }
         }
-        Some("FTP") => {
-            let ftp_map = state.get_ftp_connection().await;
-            let mut connections = ftp_map.write().await;
-            let client = connections
-                .get_mut(&connection_id)
-                .ok_or("FTP connection not found".to_string())?;
-            client.upload_file(&local_path, &remote_path).await
-        }
-        Some(other) => return Err(format!("Unsupported protocol: {}", other)),
-        None => {
-            // Fallback: try SSH connection (integrated file browser uses SSH connections
-            // which are not registered in connection_types)
-            let connection = state
-                .get_connection(&connection_id)
-                .await
-                .ok_or_else(|| format!("No connection found for '{}'", connection_id))?;
-            let client = connection.read().await;
-            client.upload_file(&local_path, &remote_path).await
-        }
+    };
+
+    let result = tokio::select! {
+        _ = cancel.cancelled() => Err(anyhow::anyhow!("Transfer cancelled")),
+        result = transfer => result,
     };
 
     match result {
@@ -2479,11 +2499,11 @@ pub async fn upload_remote_file(
             data: None,
             error: None,
         }),
-        Err(e) => Ok(FileTransferResponse {
+        Err(error) => Ok(FileTransferResponse {
             success: false,
             bytes_transferred: None,
             data: None,
-            error: Some(e.to_string()),
+            error: Some(error.to_string()),
         }),
     }
 }
@@ -3424,7 +3444,6 @@ mod local_fs_tests {
         assert_eq!(s, "2024-01-01 00:00:00");
     }
 }
-
 
 // ========== Host key / secrets / known_hosts ==========
 

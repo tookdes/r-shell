@@ -155,6 +155,16 @@ impl ConnectionManager {
             }
         }
 
+        let desktop_ids: Vec<String> = {
+            let desktop = self.desktop_connections.read().await;
+            desktop.keys().cloned().collect()
+        };
+        for connection_id in desktop_ids {
+            if let Err(error) = self.close_desktop_connection(&connection_id).await {
+                tracing::warn!("Failed to close desktop {}: {}", connection_id, error);
+            }
+        }
+
         // Cancel any leftover PTY sessions not paired with a connection entry.
         let mut pty_sessions = self.pty_sessions.write().await;
         for (connection_id, session) in pty_sessions.drain() {
@@ -163,7 +173,7 @@ impl ConnectionManager {
         }
     }
 
-        pub async fn list_connections(&self) -> Vec<String> {
+    pub async fn list_connections(&self) -> Vec<String> {
         let connections = self.connections.read().await;
         connections.keys().cloned().collect()
     }
@@ -312,7 +322,6 @@ impl ConnectionManager {
             .await
             .map_err(|_| anyhow::anyhow!("PTY resize channel closed"))
     }
-
 
     /// Token that file-transfer commands should select on / poll.
     pub async fn transfer_token(&self, connection_id: &str) -> CancellationToken {

@@ -1,8 +1,10 @@
 checkout=success
+fixes=success
 node=success
-pnpm=failure
+pnpm=success
 rust_setup=success
 system_deps=success
-frontend_deps=failure
-frontend=failure
+frontend_deps=success
+rust_format=success
+frontend=success
 rust=failure

@@ -67,9 +67,13 @@ function shouldPersistPasswords(): boolean {
   }
 }
 
-function maybeStripSecrets<T extends { password?: string; passphrase?: string; vncPassword?: string }>(
-  connection: T,
-): T {
+function maybeStripSecrets<T extends {
+  password?: string;
+  passphrase?: string;
+  vncPassword?: string;
+  privateKeyData?: string;
+  proxyPassword?: string;
+}>(connection: T): T {
   if (shouldPersistPasswords()) {
     return connection;
   }
@@ -78,6 +82,8 @@ function maybeStripSecrets<T extends { password?: string; passphrase?: string; v
     password: undefined,
     passphrase: undefined,
     vncPassword: undefined,
+    privateKeyData: undefined,
+    proxyPassword: undefined,
   };
 }
 
@@ -196,6 +202,19 @@ export class ConnectionStorageManager {
   static getConnection(id: string): ConnectionData | undefined {
     const connections = this.getConnections();
     return connections.find(c => c.id === id);
+  }
+
+  /** Remove all persisted authentication material from existing connections. */
+  static stripStoredSecrets(): void {
+    const connections = this.getConnections().map((connection) => ({
+      ...connection,
+      password: undefined,
+      passphrase: undefined,
+      vncPassword: undefined,
+      privateKeyData: undefined,
+      proxyPassword: undefined,
+    }));
+    localStorage.setItem(CONNECTIONS_STORAGE_KEY, JSON.stringify(connections));
   }
 
   /**

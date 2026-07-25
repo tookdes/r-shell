@@ -62,6 +62,7 @@ import {
 import { normalizeUpdateProxy } from '@/lib/update-proxy';
 import { Checkbox } from './ui/checkbox';
 import { useLayout } from '@/lib/layout-context';
+import { ConnectionStorageManager } from '@/lib/connection-storage';
 
 interface SettingsModalProps {
   open: boolean;
@@ -248,6 +249,9 @@ export function SettingsModal({ open, onOpenChange, onAppearanceChange, onCheckF
       ...settings,
       updateProxy: updateProxy ?? '',
     }));
+    if (!settings.savePasswords) {
+      ConnectionStorageManager.stripStoredSecrets();
+    }
     window.dispatchEvent(new Event(APP_SETTINGS_CHANGED_EVENT));
     onOpenChange(false);
     return true;

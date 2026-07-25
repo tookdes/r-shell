@@ -100,6 +100,11 @@ mod tests {
             auth_method: AuthMethod::Password {
                 password: "wrongpassword".to_string(),
             },
+            connection_timeout_secs: Some(30),
+            keepalive_interval_secs: Some(60),
+            verify_host_key: false,
+            proxy: None,
+            startup_command: None,
         };
 
         let result = client_write.connect(&config).await;
@@ -251,16 +256,25 @@ mod key_loading_tests {
             host: "127.0.0.1".to_string(),
             port: 22,
             username: "user".to_string(),
-            auth_method: AuthMethod::PublicKey { key_path: Some("/nonexistent/path/id_rsa".to_string()), key_data: None,
+            auth_method: AuthMethod::PublicKey {
+                key_path: Some("/nonexistent/path/id_rsa".to_string()),
+                key_data: None,
                 passphrase: None,
             },
+            connection_timeout_secs: Some(1),
+            keepalive_interval_secs: Some(0),
+            verify_host_key: false,
+            proxy: None,
+            startup_command: None,
         };
 
         let mut client = SshClient::new();
         let err = client.connect(&config).await.unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("not found") || msg.contains("SSH key file") || msg.contains("Connection refused"),
+            msg.contains("not found")
+                || msg.contains("SSH key file")
+                || msg.contains("Connection refused"),
             "Error should mention the missing file, got: {msg}"
         );
     }

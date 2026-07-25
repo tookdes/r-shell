@@ -272,21 +272,19 @@ impl StandaloneSftpClient {
             .open(remote_path)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to open remote file '{}': {}", remote_path, e))?;
-
-        let mut buffer = Vec::new();
-        let mut temp_buf = vec![0u8; 32768];
+        let mut local_file = tokio::fs::File::create(local_path).await?;
+        let mut buffer = vec![0u8; 32768];
         let mut total_bytes = 0u64;
 
         loop {
-            let n = remote_file.read(&mut temp_buf).await?;
-            if n == 0 {
+            let count = remote_file.read(&mut buffer).await?;
+            if count == 0 {
                 break;
             }
-            buffer.extend_from_slice(&temp_buf[..n]);
-            total_bytes += n as u64;
+            local_file.write_all(&buffer[..count]).await?;
+            total_bytes += count as u64;
         }
-
-        tokio::fs::write(local_path, buffer).await?;
+        local_file.flush().await?;
         Ok(total_bytes)
     }
 
@@ -297,24 +295,24 @@ impl StandaloneSftpClient {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("SFTP session not connected"))?;
 
-        let data = tokio::fs::read(local_path)
+        let mut local_file = tokio::fs::File::open(local_path)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to read local file '{}': {}", local_path, e))?;
-        let total_bytes = data.len() as u64;
-
         let mut remote_file = sftp.create(remote_path).await.map_err(|e| {
             anyhow::anyhow!("Failed to create remote file '{}': {}", remote_path, e)
         })?;
+        let mut buffer = vec![0u8; 32768];
+        let mut total_bytes = 0u64;
 
-        let chunk_size = 32768;
-        let mut offset = 0;
-        while offset < data.len() {
-            let end = std::cmp::min(offset + chunk_size, data.len());
-            remote_file.write_all(&data[offset..end]).await?;
-            offset = end;
+        loop {
+            let count = local_file.read(&mut buffer).await?;
+            if count == 0 {
+                break;
+            }
+            remote_file.write_all(&buffer[..count]).await?;
+            total_bytes += count as u64;
         }
         remote_file.flush().await?;
-
         Ok(total_bytes)
     }
 

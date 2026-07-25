@@ -198,9 +198,7 @@ pub async fn check_or_prompt(host: &str, port: u16, key: &PublicKey, enabled: bo
             accepted
         }
         HostKeyStatus::Changed => {
-            tracing::error!(
-                "HOST KEY CHANGED for {host}:{port} — presented {fp} (possible MITM)"
-            );
+            tracing::error!("HOST KEY CHANGED for {host}:{port} — presented {fp} (possible MITM)");
             // Notify the user, but never accept or replace a changed key in-band.
             // The stored entry must be explicitly removed before reconnecting.
             let _ = crate::host_key_prompt::prompt_user(host, port, &algo, &fp, true).await;

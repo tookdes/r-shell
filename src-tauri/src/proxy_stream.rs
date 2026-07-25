@@ -81,7 +81,7 @@ fn validate_host(host: &str) -> Result<()> {
     if host.is_empty() {
         return Err(anyhow!("target host is empty"));
     }
-    if host.contains(['\r', '\n']) {
+    if host.contains('\r') || host.contains('\n') {
         return Err(anyhow!("target host contains invalid characters"));
     }
     Ok(())
@@ -200,7 +200,11 @@ async fn connect_socks5(
             }
         }
         0xff => return Err(anyhow!("SOCKS5 proxy rejected all authentication methods")),
-        method => return Err(anyhow!("SOCKS5 proxy selected unsupported auth method {method}")),
+        method => {
+            return Err(anyhow!(
+                "SOCKS5 proxy selected unsupported auth method {method}"
+            ))
+        }
     }
 
     let mut request = Vec::with_capacity(22 + target_host.len());
@@ -254,4 +258,38 @@ async fn connect_socks5(
     }
 
     Ok(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{authority, validate_host, ProxyType};
+
+    #[test]
+    fn formats_ipv6_authority_with_brackets() {
+        assert_eq!(authority("2001:db8::1", 22), "[2001:db8::1]:22");
+    }
+
+    #[test]
+    fn formats_dns_authority_without_brackets() {
+        assert_eq!(authority("example.com", 22), "example.com:22");
+    }
+
+    #[test]
+    fn rejects_header_injection_in_target_host() {
+        assert!(validate_host("example.com\r\nInjected: true").is_err());
+        assert!(validate_host("").is_err());
+    }
+
+    #[test]
+    fn parses_supported_proxy_types_without_treating_unknown_values_as_enabled() {
+        assert!(matches!(ProxyType::from_str_loose("http"), ProxyType::Http));
+        assert!(matches!(
+            ProxyType::from_str_loose("socks"),
+            ProxyType::Socks5
+        ));
+        assert!(matches!(
+            ProxyType::from_str_loose("unknown"),
+            ProxyType::None
+        ));
+    }
 }
