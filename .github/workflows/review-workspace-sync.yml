@@ -42,22 +42,8 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
-
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Format Rust
-        working-directory: src-tauri
-        run: cargo fmt
 
       - name: Frontend checks
         id: frontend
@@ -69,6 +55,20 @@ jobs:
             pnpm test
             pnpm i18n:check
           } 2>&1 | tee review-frontend.log
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Format Rust
+        working-directory: src-tauri
+        run: cargo fmt
 
       - name: Rust checks
         id: rust
