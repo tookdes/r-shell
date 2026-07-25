@@ -84,7 +84,9 @@
     "restoreHighlightAutoReconnect": "Auto reconnect with retry",
     "restoreHighlightMonitoring": "Live status monitoring",
     "unknownHost": "unknown host",
-    "restoreCancelled": "Session restore cancelled"
+    "restoreCancelled": "Session restore cancelled",
+    "rdpDisabled": "RDP is disabled",
+    "rdpDisabledDesc": "Remote Desktop (RDP) is not available in this build. Use SSH, SFTP, FTP, or VNC instead."
   },
   "connectionDialog": {
     "title": {
@@ -128,7 +130,9 @@
       "maxCount": "Max Count",
       "domain": "Domain (optional)",
       "displayResolution": "Display Resolution",
-      "colorDepth": "Color Depth"
+      "colorDepth": "Color Depth",
+      "privateKeyData": "Or paste private key (PEM)",
+      "startupCommand": "Startup command"
     },
     "placeholder": {
       "connectionName": "My Server",
@@ -142,7 +146,9 @@
       "proxyPort": "Proxy Port",
       "proxyUsername": "Optional",
       "proxyPassword": "Optional",
-      "domain": "WORKGROUP"
+      "domain": "WORKGROUP",
+      "privateKeyData": "-----BEGIN OPENSSH PRIVATE KEY-----",
+      "startupCommand": "e.g. cd /var/www && bash"
     },
     "authMethod": {
       "password": "Password",
@@ -217,7 +223,8 @@
       "connectionFailedDesc": "Unable to connect to the server. Please check your credentials and try again.",
       "connectionError": "Connection Error",
       "connectionErrorDesc": "An unexpected error occurred while connecting."
-    }
+    },
+    "startupCommandDesc": "Sent to the remote shell once the PTY is ready (optional)."
   },
   "settings": {
     "title": "Settings & Preferences",
@@ -293,7 +300,13 @@
       "savePasswordsDesc": "Store passwords locally (encrypted)",
       "autoLockTimeout": "Auto Lock Timeout: {{timeout}} minutes",
       "autoLockTimeoutDesc": "Automatically lock the application after this period of inactivity",
-      "autoLockTimeoutNotImplemented": "Not implemented yet — auto-lock is currently unavailable."
+      "autoLockTimeoutNotImplemented": "Not implemented yet — auto-lock is currently unavailable.",
+      "clearKnownHosts": "Clear stored host key",
+      "clearKnownHostsDesc": "Remove the remembered key for a host so the next connection will re-prompt.",
+      "clearKnownHostsHost": "Host",
+      "clearKnownHostsPort": "Port",
+      "clearKnownHostsButton": "Clear Host Key",
+      "clearKnownHostsSuccess": "Host key cleared"
     },
     "interface": {
       "title": "Interface Settings",
@@ -1135,5 +1148,17 @@
     "desktopDisconnected": "Desktop Disconnected",
     "reconnect": "Reconnect",
     "connectingTo": "Connecting to {{name}}..."
+  },
+  "hostKey": {
+    "title": "Verify Host Key",
+    "titleChanged": "Host Key Changed",
+    "unknownDesc": "This server has not been contacted before. Verify the fingerprint matches the server administrator's key before continuing.",
+    "changedDesc": "The host key for this server differs from the key stored previously. This may indicate a man-in-the-middle attack or a reinstalled server.",
+    "host": "Host",
+    "algorithm": "Algorithm",
+    "fingerprint": "Fingerprint",
+    "accept": "Trust and Continue",
+    "reject": "Reject",
+    "acceptReplace": "Replace Key and Continue"
   }
 }

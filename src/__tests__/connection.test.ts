@@ -1,157 +1,210 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+/**
+ * Issue #36 — connection tests must run outside the Tauri runtime.
+ *
+ * These unit tests mock `@tauri-apps/api/core.invoke` so `pnpm test` works in
+ * plain Vitest/jsdom. Real SSH integration belongs in e2e / a Tauri-capable
+ * harness, not the default frontend suite.
+ */
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 
-// Test credentials - Replace with your own test server credentials
-const TEST_HOST = 'localhost'; // Replace with your test SSH server
-const TEST_USERNAME = 'testuser'; // Replace with your test username
-const TEST_PASSWORD = 'testpass'; // Replace with your test password
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(),
+}));
 
-describe('SSH Connection Tests', () => {
-  let connectionId: string;
+const mockedInvoke = vi.mocked(invoke);
 
-  beforeAll(() => {
-    connectionId = `test-connection-${Date.now()}`;
-  });
+describe('SSH Connection Tests (mocked invoke)', () => {
+  const connectionId = 'test-connection-unit';
 
-  afterAll(async () => {
-    // Clean up: disconnect the test connection
-    if (connectionId) {
-      try {
-        await invoke('ssh_disconnect', { connection_id: connectionId });
-      } catch (error) {
-        console.error('Cleanup error:', error);
-      }
-    }
+  beforeEach(() => {
+    mockedInvoke.mockReset();
   });
 
   it('should successfully connect to SSH server', async () => {
-    const result = await invoke<{ success: boolean; error?: string }>(
-      'ssh_connect',
-      {
-        request: {
-          connection_id: connectionId,
-          host: TEST_HOST,
-          port: 22,
-          username: TEST_USERNAME,
-          auth_method: 'password',
-          password: TEST_PASSWORD,
-          key_path: null,
-          passphrase: null,
-        }
-      }
-    );
+    mockedInvoke.mockResolvedValueOnce({ success: true });
 
+    const result = await invoke<{ success: boolean; error?: string }>('ssh_connect', {
+      request: {
+        connection_id: connectionId,
+        host: 'localhost',
+        port: 22,
+        username: 'testuser',
+        auth_method: 'password',
+        password: 'testpass',
+        key_path: null,
+        passphrase: null,
+      },
+    });
+
+    expect(mockedInvoke).toHaveBeenCalledWith(
+      'ssh_connect',
+      expect.objectContaining({
+        request: expect.objectContaining({
+          connection_id: connectionId,
+          host: 'localhost',
+          auth_method: 'password',
+        }),
+      }),
+    );
     expect(result.success).toBe(true);
     expect(result.error).toBeUndefined();
-  }, 10000); // 10 second timeout for connection
+  });
 
   it('should execute a simple command', async () => {
+    mockedInvoke.mockResolvedValueOnce({
+      success: true,
+      output: 'Hello from test\n',
+    });
+
     const result = await invoke<{ success: boolean; output?: string; error?: string }>(
       'ssh_execute_command',
       {
         connection_id: connectionId,
         command: 'echo "Hello from test"',
-      }
+      },
     );
 
+    expect(mockedInvoke).toHaveBeenCalledWith(
+      'ssh_execute_command',
+      expect.objectContaining({
+        connection_id: connectionId,
+        command: 'echo "Hello from test"',
+      }),
+    );
     expect(result.success).toBe(true);
     expect(result.output).toContain('Hello from test');
-  }, 5000);
+  });
 
   it('should get system stats', async () => {
+    mockedInvoke.mockResolvedValueOnce({
+      success: true,
+      output: JSON.stringify({
+        cpu: 1.5,
+        memory: { total: 1, used: 0 },
+        disk: { total: '1G', used: '0' },
+        uptime: '1 day',
+      }),
+    });
+
     const result = await invoke<{ success: boolean; output?: string; error?: string }>(
       'get_system_stats',
-      { connection_id: connectionId }
+      { connection_id: connectionId },
     );
 
     expect(result.success).toBe(true);
     expect(result.output).toBeDefined();
-    
     if (result.output) {
-      const stats = JSON.parse(result.output);
+      const stats = JSON.parse(result.output) as Record<string, unknown>;
       expect(stats).toHaveProperty('cpu');
       expect(stats).toHaveProperty('memory');
       expect(stats).toHaveProperty('disk');
       expect(stats).toHaveProperty('uptime');
     }
-  }, 5000);
+  });
 
   it('should get process list', async () => {
-    const result = await invoke<{ 
-      success: boolean; 
+    mockedInvoke.mockResolvedValueOnce({
+      success: true,
+      processes: [
+        { pid: 1, user: 'root', cpu: 0.1, mem: 0.2, command: 'init' },
+      ],
+    });
+
+    const result = await invoke<{
+      success: boolean;
       processes?: Array<{
         pid: number;
         user: string;
         cpu: number;
         mem: number;
         command: string;
-      }>; 
-      error?: string 
+      }>;
+      error?: string;
     }>('get_processes', { connection_id: connectionId });
 
     expect(result.success).toBe(true);
     expect(result.processes).toBeDefined();
     expect(Array.isArray(result.processes)).toBe(true);
-    
     if (result.processes && result.processes.length > 0) {
-      const process = result.processes[0];
-      expect(process).toHaveProperty('pid');
-      expect(process).toHaveProperty('user');
-      expect(process).toHaveProperty('cpu');
-      expect(process).toHaveProperty('mem');
-      expect(process).toHaveProperty('command');
+      const processInfo = result.processes[0];
+      expect(processInfo).toHaveProperty('pid');
+      expect(processInfo).toHaveProperty('user');
+      expect(processInfo).toHaveProperty('cpu');
+      expect(processInfo).toHaveProperty('mem');
+      expect(processInfo).toHaveProperty('command');
     }
-  }, 5000);
+  });
 
   it('should list files in home directory', async () => {
-    const result = await invoke<{ 
-      success: boolean; 
+    mockedInvoke.mockResolvedValueOnce({
+      success: true,
+      files: [
+        {
+          name: '.bashrc',
+          size: 100,
+          is_dir: false,
+          modified: '2026-01-01',
+          permissions: '-rw-r--r--',
+        },
+      ],
+    });
+
+    const result = await invoke<{
+      success: boolean;
       files?: Array<{
         name: string;
         size: number;
         is_dir: boolean;
         modified: string;
         permissions: string;
-      }>; 
-      error?: string 
+      }>;
+      error?: string;
     }>('list_files', {
       connection_id: connectionId,
-      path: '~'
+      path: '~',
     });
 
     expect(result.success).toBe(true);
     expect(result.files).toBeDefined();
     expect(Array.isArray(result.files)).toBe(true);
-  }, 5000);
+  });
 
   it('should fail with invalid credentials', async () => {
-    const badConnectionId = `bad-connection-${Date.now()}`;
-    const result = await invoke<{ success: boolean; error?: string }>(
-      'ssh_connect',
-      {
-        request: {
-          connection_id: badConnectionId,
-          host: TEST_HOST,
-          port: 22,
-          username: TEST_USERNAME,
-          auth_method: 'password',
-          password: 'wrongpassword',
-          key_path: null,
-          passphrase: null,
-        }
-      }
-    );
+    mockedInvoke.mockResolvedValueOnce({
+      success: false,
+      error: 'Authentication failed',
+    });
+
+    const badConnectionId = 'bad-connection-unit';
+    const result = await invoke<{ success: boolean; error?: string }>('ssh_connect', {
+      request: {
+        connection_id: badConnectionId,
+        host: 'localhost',
+        port: 22,
+        username: 'testuser',
+        auth_method: 'password',
+        password: 'wrongpassword',
+        key_path: null,
+        passphrase: null,
+      },
+    });
 
     expect(result.success).toBe(false);
     expect(result.error).toBeDefined();
-  }, 10000);
+  });
 
   it('should disconnect successfully', async () => {
-    const result = await invoke<{ success: boolean; error?: string }>(
-      'ssh_disconnect',
-      { connection_id: connectionId }
-    );
+    mockedInvoke.mockResolvedValueOnce({ success: true });
 
+    const result = await invoke<{ success: boolean; error?: string }>('ssh_disconnect', {
+      connection_id: connectionId,
+    });
+
+    expect(mockedInvoke).toHaveBeenCalledWith(
+      'ssh_disconnect',
+      expect.objectContaining({ connection_id: connectionId }),
+    );
     expect(result.success).toBe(true);
-  }, 5000);
+  });
 });

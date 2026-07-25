@@ -3753,12 +3753,14 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 name = "r-shell"
 version = "2.5.1"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "async-std",
  "async-trait",
  "base64 0.22.1",
  "dirs 6.0.0",
  "futures",
+ "getrandom 0.3.4",
  "open",
  "russh",
  "russh-keys",

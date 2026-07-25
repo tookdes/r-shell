@@ -261,12 +261,12 @@ export function MenuBar({
           <Button variant="ghost" size="sm">{t('menuBar.edit')}</Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start">
-          <DropdownMenuItem onClick={onCopy} disabled={!hasActiveConnection}>
+          <DropdownMenuItem onClick={() => { onCopy?.(); window.dispatchEvent(new Event('r-shell:copy-active-terminal')); }} disabled={!hasActiveConnection}>
             <Copy className="mr-2 h-4 w-4" />
             {t('menuBar.copy')}
             <DropdownMenuShortcut>{cmdOrCtrl}+C</DropdownMenuShortcut>
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={onPaste} disabled={!hasActiveConnection || !canPaste}>
+          <DropdownMenuItem onClick={() => { onPaste?.(); window.dispatchEvent(new Event('r-shell:paste-active-terminal')); }} disabled={!hasActiveConnection || !canPaste}>
             <Clipboard className="mr-2 h-4 w-4" />
             {t('menuBar.paste')}
             <DropdownMenuShortcut>{cmdOrCtrl}+V</DropdownMenuShortcut>
@@ -277,22 +277,32 @@ export function MenuBar({
             <DropdownMenuShortcut>{cmdOrCtrl}+X</DropdownMenuShortcut>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={onSelectAll} disabled={!hasActiveConnection}>
+          <DropdownMenuItem onClick={() => { onSelectAll?.(); window.dispatchEvent(new Event('r-shell:select-all-active-terminal')); }} disabled={!hasActiveConnection}>
             {t('menuBar.selectAll')}
             <DropdownMenuShortcut>{cmdOrCtrl}+A</DropdownMenuShortcut>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={onFind} disabled={!hasActiveConnection}>
+          <DropdownMenuItem onClick={() => { onFind?.(); window.dispatchEvent(new Event('r-shell:find-active-terminal')); }} disabled={!hasActiveConnection}>
             <Search className="mr-2 h-4 w-4" />
             {t('menuBar.find')}
             <DropdownMenuShortcut>{cmdOrCtrl}+F</DropdownMenuShortcut>
           </DropdownMenuItem>
-          <DropdownMenuItem disabled={!hasActiveConnection}>
+          <DropdownMenuItem
+            disabled={!hasActiveConnection}
+            onClick={() => {
+              window.dispatchEvent(new Event('r-shell:find-next-active-terminal'));
+            }}
+          >
             <Search className="mr-2 h-4 w-4" />
             {t('menuBar.findNext')}
             <DropdownMenuShortcut>F3</DropdownMenuShortcut>
           </DropdownMenuItem>
-          <DropdownMenuItem disabled={!hasActiveConnection}>
+          <DropdownMenuItem
+            disabled={!hasActiveConnection}
+            onClick={() => {
+              window.dispatchEvent(new Event('r-shell:find-previous-active-terminal'));
+            }}
+          >
             <Search className="mr-2 h-4 w-4" />
             {t('menuBar.findPrevious')}
             <DropdownMenuShortcut>Shift+F3</DropdownMenuShortcut>

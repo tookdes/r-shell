@@ -24,6 +24,8 @@ export interface ConnectionData {
   authMethod?: 'password' | 'publickey' | 'keyboard-interactive' | 'anonymous';
   password?: string; // Note: In production, this should be encrypted
   privateKeyPath?: string;
+  /** Inline PEM private key (encrypted at rest when savePasswords is on). */
+  privateKeyData?: string;
   passphrase?: string;
   // FTP-specific
   ftpsEnabled?: boolean;
@@ -33,6 +35,13 @@ export interface ConnectionData {
   // VNC-specific
   vncColorDepth?: string;
   vncPassword?: string;
+  proxyType?: 'none' | 'http' | 'socks4' | 'socks5';
+  proxyHost?: string;
+  proxyPort?: number;
+  proxyUsername?: string;
+  proxyPassword?: string;
+  /** Commands run after SSH PTY is ready (newline-separated). */
+  startupCommand?: string;
 }
 
 export interface ConnectionFolder {

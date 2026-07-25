@@ -21,6 +21,8 @@ mod tests {
             connection_timeout_secs: Some(30),
             keepalive_interval_secs: Some(60),
             verify_host_key: false,
+            proxy: None,
+            startup_command: None,
         }
     }
 
@@ -249,8 +251,7 @@ mod key_loading_tests {
             host: "127.0.0.1".to_string(),
             port: 22,
             username: "user".to_string(),
-            auth_method: AuthMethod::PublicKey {
-                key_path: "/nonexistent/path/id_rsa".to_string(),
+            auth_method: AuthMethod::PublicKey { key_path: Some("/nonexistent/path/id_rsa".to_string()), key_data: None,
                 passphrase: None,
             },
         };

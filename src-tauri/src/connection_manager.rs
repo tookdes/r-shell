@@ -29,6 +29,8 @@ pub struct ConnectionManager {
     connection_types: Arc<RwLock<HashMap<String, String>>>,
     /// Cached OS info per SSH connection (auto-detected on first monitoring call)
     os_info_cache: OsInfoCache,
+    /// Per-connection cancellation for in-flight file transfers.
+    transfer_tokens: Arc<RwLock<HashMap<String, CancellationToken>>>,
 }
 
 impl ConnectionManager {
@@ -43,6 +45,7 @@ impl ConnectionManager {
             desktop_connections: Arc::new(RwLock::new(HashMap::new())),
             connection_types: Arc::new(RwLock::new(HashMap::new())),
             os_info_cache: OsInfoCache::new(),
+            transfer_tokens: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -93,6 +96,7 @@ impl ConnectionManager {
     }
 
     pub async fn close_connection(&self, connection_id: &str) -> Result<()> {
+        self.abort_transfers(connection_id).await;
         // Tear down any interactive PTY first so reader tasks stop promptly.
         {
             let mut pty_sessions = self.pty_sessions.write().await;
@@ -117,8 +121,10 @@ impl ConnectionManager {
         &self.os_info_cache
     }
 
-    /// Close every SSH connection and cancel all PTY sessions.
+    /// Close every SSH/SFTP/FTP/desktop connection and cancel PTY + transfers.
     pub async fn close_all_connections(&self) {
+        self.abort_all_transfers().await;
+
         let connection_ids: Vec<String> = {
             let connections = self.connections.read().await;
             connections.keys().cloned().collect()
@@ -126,6 +132,26 @@ impl ConnectionManager {
         for connection_id in connection_ids {
             if let Err(error) = self.close_connection(&connection_id).await {
                 tracing::warn!("Failed to close connection {}: {}", connection_id, error);
+            }
+        }
+
+        let sftp_ids: Vec<String> = {
+            let sftp = self.sftp_connections.read().await;
+            sftp.keys().cloned().collect()
+        };
+        for connection_id in sftp_ids {
+            if let Err(error) = self.close_sftp_connection(&connection_id).await {
+                tracing::warn!("Failed to close SFTP {}: {}", connection_id, error);
+            }
+        }
+
+        let ftp_ids: Vec<String> = {
+            let ftp = self.ftp_connections.read().await;
+            ftp.keys().cloned().collect()
+        };
+        for connection_id in ftp_ids {
+            if let Err(error) = self.close_ftp_connection(&connection_id).await {
+                tracing::warn!("Failed to close FTP {}: {}", connection_id, error);
             }
         }
 
@@ -287,6 +313,33 @@ impl ConnectionManager {
             .map_err(|_| anyhow::anyhow!("PTY resize channel closed"))
     }
 
+
+    /// Token that file-transfer commands should select on / poll.
+    pub async fn transfer_token(&self, connection_id: &str) -> CancellationToken {
+        let mut tokens = self.transfer_tokens.write().await;
+        tokens
+            .entry(connection_id.to_string())
+            .or_insert_with(CancellationToken::new)
+            .clone()
+    }
+
+    /// Cancel all in-flight transfers for a connection (and issue a fresh token).
+    pub async fn abort_transfers(&self, connection_id: &str) {
+        let mut tokens = self.transfer_tokens.write().await;
+        if let Some(token) = tokens.remove(connection_id) {
+            token.cancel();
+            tracing::info!("Aborted transfers for {}", connection_id);
+        }
+    }
+
+    pub async fn abort_all_transfers(&self) {
+        let mut tokens = self.transfer_tokens.write().await;
+        for (id, token) in tokens.drain() {
+            token.cancel();
+            tracing::info!("Aborted transfers for {}", id);
+        }
+    }
+
     // ===== Standalone SFTP Connection Management =====
 
     pub async fn create_sftp_connection(
@@ -307,6 +360,7 @@ impl ConnectionManager {
     }
 
     pub async fn close_sftp_connection(&self, connection_id: &str) -> Result<()> {
+        self.abort_transfers(connection_id).await;
         let mut sftp_connections = self.sftp_connections.write().await;
         if let Some(mut client) = sftp_connections.remove(connection_id) {
             client.disconnect().await?;
@@ -336,6 +390,7 @@ impl ConnectionManager {
     }
 
     pub async fn close_ftp_connection(&self, connection_id: &str) -> Result<()> {
+        self.abort_transfers(connection_id).await;
         let mut ftp_connections = self.ftp_connections.write().await;
         if let Some(mut client) = ftp_connections.remove(connection_id) {
             client.disconnect().await?;

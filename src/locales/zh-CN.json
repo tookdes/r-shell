@@ -84,7 +84,9 @@
     "restoreHighlightAutoReconnect": "自动重连与重试",
     "restoreHighlightMonitoring": "实时状态监控",
     "unknownHost": "未知主机",
-    "restoreCancelled": "已取消会话恢复"
+    "restoreCancelled": "已取消会话恢复",
+    "rdpDisabled": "RDP 已禁用",
+    "rdpDisabledDesc": "此版本不提供远程桌面（RDP）。请使用 SSH、SFTP、FTP 或 VNC。"
   },
   "connectionDialog": {
     "title": {
@@ -128,7 +130,9 @@
       "maxCount": "最大次数",
       "domain": "域（可选）",
       "displayResolution": "显示分辨率",
-      "colorDepth": "色彩深度"
+      "colorDepth": "色彩深度",
+      "privateKeyData": "或粘贴私钥（PEM）",
+      "startupCommand": "启动命令"
     },
     "placeholder": {
       "connectionName": "我的服务器",
@@ -142,7 +146,9 @@
       "proxyPort": "代理端口",
       "proxyUsername": "可选",
       "proxyPassword": "可选",
-      "domain": "WORKGROUP"
+      "domain": "WORKGROUP",
+      "privateKeyData": "-----BEGIN OPENSSH PRIVATE KEY-----",
+      "startupCommand": "例如：cd /var/www && bash"
     },
     "authMethod": {
       "password": "密码",
@@ -217,7 +223,8 @@
       "connectionFailedDesc": "无法连接到服务器，请检查您的凭据并重试。",
       "connectionError": "连接错误",
       "connectionErrorDesc": "连接时发生意外错误。"
-    }
+    },
+    "startupCommandDesc": "PTY 就绪后发送到远程 shell（可选）。"
   },
   "settings": {
     "title": "设置与首选项",
@@ -293,7 +300,13 @@
       "savePasswordsDesc": "在本地存储密码（加密）",
       "autoLockTimeout": "自动锁定超时：{{timeout}}分钟",
       "autoLockTimeoutDesc": "在此无活动时间后自动锁定应用程序",
-      "autoLockTimeoutNotImplemented": "尚未实现 — 自动锁定当前不可用。"
+      "autoLockTimeoutNotImplemented": "尚未实现 — 自动锁定当前不可用。",
+      "clearKnownHosts": "清除已存储的主机密钥",
+      "clearKnownHostsDesc": "删除指定主机的记忆密钥，下次连接将重新提示确认。",
+      "clearKnownHostsHost": "主机",
+      "clearKnownHostsPort": "端口",
+      "clearKnownHostsButton": "清除主机密钥",
+      "clearKnownHostsSuccess": "主机密钥已清除"
     },
     "interface": {
       "title": "界面设置",
@@ -1135,5 +1148,17 @@
     "desktopDisconnected": "桌面已断开",
     "reconnect": "重新连接",
     "connectingTo": "正在连接到 {{name}}..."
+  },
+  "hostKey": {
+    "title": "验证主机密钥",
+    "titleChanged": "主机密钥已变更",
+    "unknownDesc": "尚未连接过此服务器。请确认指纹与管理员提供的一致后再继续。",
+    "changedDesc": "此服务器的主机密钥与本地记录不一致，可能是中间人攻击，或服务器已重装。",
+    "host": "主机",
+    "algorithm": "算法",
+    "fingerprint": "指纹",
+    "accept": "信任并继续",
+    "reject": "拒绝",
+    "acceptReplace": "替换密钥并继续"
   }
 }

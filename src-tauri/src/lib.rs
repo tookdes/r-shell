@@ -3,6 +3,9 @@ mod connection_manager;
 mod desktop_protocol;
 mod ftp_client;
 mod known_hosts;
+mod host_key_prompt;
+mod proxy_stream;
+mod secrets;
 mod os_detect;
 mod rdp_client;
 mod sftp_client;
@@ -224,6 +227,8 @@ pub fn run() {
         .setup({
             let connection_manager_clone = connection_manager.clone();
             move |app| {
+                crate::host_key_prompt::set_app_handle(app.handle().clone());
+
                 // Register native macOS menu and forward item events to the frontend
                 #[cfg(target_os = "macos")]
                 {
@@ -258,6 +263,11 @@ pub fn run() {
             commands::ssh_cancel_connect,
             commands::ssh_disconnect,
             commands::ssh_disconnect_all,
+            commands::host_key_respond,
+            commands::known_hosts_forget,
+            commands::secrets_encrypt,
+            commands::secrets_decrypt,
+            commands::abort_connection_transfers,
             commands::ssh_execute_command,
             commands::ssh_tab_complete,
             commands::get_system_stats,
