@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   verify:
+    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[review-ci]')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout review branch
@@ -19,6 +20,12 @@ jobs:
         continue-on-error: true
         with:
           fetch-depth: 0
+
+      - name: Apply verified fixes
+        id: fixes
+        if: always()
+        continue-on-error: true
+        run: python3 scripts/review-workspace-sync-fix.py
 
       - name: Setup Node.js
         id: node
@@ -58,6 +65,13 @@ jobs:
         continue-on-error: true
         run: pnpm install --frozen-lockfile
 
+      - name: Format Rust
+        id: rust_format
+        if: always()
+        continue-on-error: true
+        working-directory: src-tauri
+        run: cargo fmt
+
       - name: Frontend checks
         id: frontend
         if: always()
@@ -77,26 +91,28 @@ jobs:
           cargo test
           cargo clippy -- -D warnings
 
-      - name: Record verification result
+      - name: Record and commit review result
         if: always()
         run: |
-          printf 'checkout=%s\nnode=%s\npnpm=%s\nrust_setup=%s\nsystem_deps=%s\nfrontend_deps=%s\nfrontend=%s\nrust=%s\n' \
+          printf 'checkout=%s\nfixes=%s\nnode=%s\npnpm=%s\nrust_setup=%s\nsystem_deps=%s\nfrontend_deps=%s\nrust_format=%s\nfrontend=%s\nrust=%s\n' \
             '${{ steps.checkout.outcome }}' \
+            '${{ steps.fixes.outcome }}' \
             '${{ steps.node.outcome }}' \
             '${{ steps.pnpm.outcome }}' \
             '${{ steps.rust_setup.outcome }}' \
             '${{ steps.system_deps.outcome }}' \
             '${{ steps.frontend_deps.outcome }}' \
+            '${{ steps.rust_format.outcome }}' \
             '${{ steps.frontend.outcome }}' \
             '${{ steps.rust.outcome }}' > .review-ci-status
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add .review-ci-status
+          git add -A
           if ! git diff --cached --quiet; then
-            git commit -m 'chore: record review CI status [review-ci]'
+            git commit -m 'fix: apply workspace-sync review fixes [review-ci]'
             git push
           fi
 
       - name: Fail when verification failed
-        if: always() && (steps.frontend.outcome != 'success' || steps.rust.outcome != 'success')
+        if: always() && (steps.fixes.outcome != 'success' || steps.frontend.outcome != 'success' || steps.rust.outcome != 'success')
         run: exit 1
