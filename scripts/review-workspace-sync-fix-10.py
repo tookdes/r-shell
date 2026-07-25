@@ -9,9 +9,11 @@ ROOT = Path(__file__).resolve().parents[1]
 def replace_once(path: str, old: str, new: str) -> None:
     file_path = ROOT / path
     text = file_path.read_text(encoding="utf-8")
-    if new in text:
-        return
     count = text.count(old)
+    if count == 0:
+        if not new or new in text:
+            return
+        raise RuntimeError(f"{path}: replacement target is missing")
     if count != 1:
         raise RuntimeError(f"{path}: expected one match, found {count}")
     file_path.write_text(text.replace(old, new, 1), encoding="utf-8")
