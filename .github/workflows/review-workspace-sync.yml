@@ -42,14 +42,32 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Frontend checks
+        id: frontend
         run: |
           pnpm build
           pnpm test
           pnpm i18n:check
 
       - name: Rust checks
+        id: rust
         working-directory: src-tauri
         run: |
           cargo fmt --check
           cargo test
           cargo clippy -- -D warnings
+
+      - name: Record verification result
+        if: always()
+        run: |
+          printf 'frontend=%s\nrust=%s\n' '${{ steps.frontend.outcome }}' '${{ steps.rust.outcome }}' > .review-ci-status
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .review-ci-status
+          if ! git diff --cached --quiet; then
+            git commit -m 'chore: record review CI status [review-ci]'
+            git push
+          fi
+
+      - name: Fail when verification failed
+        if: always() && (steps.frontend.outcome != 'success' || steps.rust.outcome != 'success')
+        run: exit 1
