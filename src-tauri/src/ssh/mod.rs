@@ -10,17 +10,16 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 /// Preferred host-key algorithms advertised to the server, ordered from most to
-/// least preferred.  RSA variants (including the legacy `ssh-rsa` / SHA-1) are
-/// included so that older servers that only offer RSA host keys are still
-/// reachable.  The `openssl` feature on `russh` / `russh-keys` must be enabled
-/// for the RSA entries to have any effect.
+/// least preferred. RSA keys remain supported through rsa-sha2-256/512; the
+/// legacy `ssh-rsa` signature algorithm is intentionally excluded because it
+/// relies on SHA-1. The `openssl` feature on `russh` / `russh-keys` must be
+/// enabled for the RSA-SHA2 entries to have any effect.
 pub static PREFERRED_HOST_KEY_ALGOS: &[russh_keys::key::Name] = &[
     russh_keys::key::ED25519,
     russh_keys::key::ECDSA_SHA2_NISTP256,
     russh_keys::key::ECDSA_SHA2_NISTP521,
     russh_keys::key::RSA_SHA2_256,
     russh_keys::key::RSA_SHA2_512,
-    russh_keys::key::SSH_RSA,
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,7 +228,7 @@ impl SshClient {
         let mut ssh_session = tokio::time::timeout(connection_timeout, async {
             let stream = crate::proxy_stream::connect_tcp(&host, port, proxy.as_ref())
                 .await
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
             client::connect_stream(ssh_config, stream, handler).await
         })
         .await

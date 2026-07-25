@@ -12,6 +12,9 @@ use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
+type DesktopClient = Arc<RwLock<Box<dyn DesktopProtocol>>>;
+type DesktopConnectionMap = Arc<RwLock<HashMap<String, DesktopClient>>>;
+
 pub struct ConnectionManager {
     connections: Arc<RwLock<HashMap<String, Arc<RwLock<SshClient>>>>>,
     pty_sessions: Arc<RwLock<HashMap<String, Arc<PtySession>>>>,
@@ -24,7 +27,7 @@ pub struct ConnectionManager {
     /// FTP/FTPS connections
     ftp_connections: Arc<RwLock<HashMap<String, FtpClient>>>,
     /// Remote desktop (RDP/VNC) connections
-    desktop_connections: Arc<RwLock<HashMap<String, Arc<RwLock<Box<dyn DesktopProtocol>>>>>>,
+    desktop_connections: DesktopConnectionMap,
     /// Track protocol type per connection ID ("SSH", "SFTP", "FTP", "RDP", "VNC")
     connection_types: Arc<RwLock<HashMap<String, String>>>,
     /// Cached OS info per SSH connection (auto-detected on first monitoring call)

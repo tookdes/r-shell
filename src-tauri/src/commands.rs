@@ -3,7 +3,6 @@ use crate::ftp_client::FtpConfig;
 use crate::os_detect::{self, OsInfo};
 use crate::sftp_client::{FileEntry, FileEntryType, SftpAuthMethod, SftpConfig};
 use crate::ssh::{AuthMethod, SshConfig};
-use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::State;
@@ -361,9 +360,9 @@ pub async fn get_system_stats(
     // Disk stats for root filesystem
     let disk_cmd = os_info.disk_cmd();
     let disk_output = client.execute_command(disk_cmd).await.unwrap_or_default();
-    let disk_parts: Vec<&str> = disk_output.trim().split_whitespace().collect();
+    let disk_parts: Vec<&str> = disk_output.split_whitespace().collect();
     let disk = DiskStats {
-        total: disk_parts.get(0).unwrap_or(&"0").to_string(),
+        total: disk_parts.first().unwrap_or(&"0").to_string(),
         used: disk_parts.get(1).unwrap_or(&"0").to_string(),
         available: disk_parts.get(2).unwrap_or(&"0").to_string(),
         use_percent: disk_parts

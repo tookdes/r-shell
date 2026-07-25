@@ -58,12 +58,12 @@ export interface ConnectionFolder {
 function shouldPersistPasswords(): boolean {
   try {
     const raw = localStorage.getItem('sshClientSettings');
-    if (!raw) return true;
+    if (!raw) return false;
     const parsed = JSON.parse(raw) as { savePasswords?: unknown };
-    // Default true for backward compatibility when key is absent; explicit false strips secrets.
-    return parsed.savePasswords !== false;
+    // Secrets are persisted only after the user explicitly enables the setting.
+    return parsed.savePasswords === true;
   } catch {
-    return true;
+    return false;
   }
 }
 

@@ -1,6 +1,5 @@
 use anyhow::Result;
 use russh::*;
-use russh_keys::*;
 use russh_sftp::client::SftpSession;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -115,7 +114,7 @@ impl StandaloneSftpClient {
         let mut ssh_session = tokio::time::timeout(connection_timeout, async {
             let stream = crate::proxy_stream::connect_tcp(&host, port, proxy.as_ref())
                 .await
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
             client::connect_stream(ssh_config, stream, handler).await
         })
         .await
@@ -230,7 +229,7 @@ impl StandaloneSftpClient {
             let size = attrs.size.unwrap_or(0);
             let modified = attrs.mtime.map(|t| chrono_from_unix_timestamp(t as u64));
 
-            let permissions = attrs.permissions.map(|p| format_permissions(p));
+            let permissions = attrs.permissions.map(format_permissions);
 
             let file_type = if attrs.is_dir() {
                 FileEntryType::Directory
@@ -570,9 +569,11 @@ mod tests {
         match config.auth_method {
             SftpAuthMethod::PublicKey {
                 key_path,
+                key_data,
                 passphrase,
             } => {
-                assert_eq!(key_path, "/home/user/.ssh/id_rsa");
+                assert_eq!(key_path.as_deref(), Some("/home/user/.ssh/id_rsa"));
+                assert!(key_data.is_none());
                 assert!(passphrase.is_none());
             }
             _ => panic!("Expected PublicKey auth method"),
