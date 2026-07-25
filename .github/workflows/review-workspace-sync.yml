@@ -60,19 +60,40 @@ jobs:
         run: cargo fmt
 
       - name: Frontend checks
+        id: frontend
+        continue-on-error: true
         run: |
-          pnpm build
-          pnpm test
-          pnpm i18n:check
+          set -o pipefail
+          {
+            pnpm build
+            pnpm test
+            pnpm i18n:check
+          } 2>&1 | tee review-frontend.log
 
       - name: Rust checks
+        id: rust
+        continue-on-error: true
         working-directory: src-tauri
         run: |
-          cargo fmt --check
-          cargo test
-          cargo clippy -- -D warnings
+          set -o pipefail
+          {
+            cargo fmt --check
+            cargo test
+            cargo clippy -- -D warnings
+          } 2>&1 | tee ../review-rust.log
+
+      - name: Upload verification logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workspace-sync-review-logs
+          path: |
+            review-frontend.log
+            review-rust.log
+          if-no-files-found: warn
 
       - name: Commit applied fixes
+        if: steps.frontend.outcome == 'success' && steps.rust.outcome == 'success'
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
@@ -82,3 +103,7 @@ jobs:
             git pull --rebase origin review/codex-workspace-sync
             git push origin HEAD:review/codex-workspace-sync
           fi
+
+      - name: Fail when verification failed
+        if: steps.frontend.outcome != 'success' || steps.rust.outcome != 'success'
+        run: exit 1
