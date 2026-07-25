@@ -1,9 +1,6 @@
 name: Review workspace sync
 
 on:
-  push:
-    branches:
-      - review/codex-workspace-sync
   pull_request:
     branches:
       - main
@@ -14,130 +11,68 @@ permissions:
 
 jobs:
   verify:
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || !contains(github.event.head_commit.message, '[review-ci]')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout review branch
-        id: checkout
         uses: actions/checkout@v4
-        continue-on-error: true
         with:
           ref: review/codex-workspace-sync
           fetch-depth: 0
 
       - name: Apply verified fixes
-        id: fixes
-        if: always()
-        continue-on-error: true
         run: |
-          set +e
-          {
-            python3 scripts/review-workspace-sync-fix.py
-            python3 scripts/review-workspace-sync-fix-2.py
-            python3 scripts/review-workspace-sync-fix-3.py
-            python3 scripts/review-workspace-sync-fix-4.py
-            python3 scripts/review-workspace-sync-fix-5.py
-          } > /tmp/review-fixes.log 2>&1
-          status=$?
-          tail -n 300 /tmp/review-fixes.log > .review-fixes.log
-          exit $status
+          python3 scripts/review-workspace-sync-fix.py
+          python3 scripts/review-workspace-sync-fix-2.py
+          python3 scripts/review-workspace-sync-fix-3.py
+          python3 scripts/review-workspace-sync-fix-4.py
+          python3 scripts/review-workspace-sync-fix-5.py
+          python3 scripts/review-workspace-sync-fix-6.py
 
       - name: Setup Node.js
-        id: node
-        if: always()
         uses: actions/setup-node@v4
-        continue-on-error: true
         with:
           node-version: '20'
 
       - name: Setup pnpm
-        id: pnpm
-        if: always()
         uses: pnpm/action-setup@v4
-        continue-on-error: true
 
       - name: Setup Rust
-        id: rust_setup
-        if: always()
         uses: dtolnay/rust-toolchain@stable
-        continue-on-error: true
         with:
           components: rustfmt, clippy
 
       - name: Install Linux dependencies
-        id: system_deps
-        if: always()
-        continue-on-error: true
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
       - name: Install frontend dependencies
-        id: frontend_deps
-        if: always()
-        continue-on-error: true
         run: pnpm install --frozen-lockfile
 
       - name: Format Rust
-        id: rust_format
-        if: always()
-        continue-on-error: true
         working-directory: src-tauri
         run: cargo fmt
 
       - name: Frontend checks
-        id: frontend
-        if: always()
-        continue-on-error: true
         run: |
-          set +e
-          {
-            pnpm build
-            pnpm test
-            pnpm i18n:check
-          } > /tmp/review-frontend.log 2>&1
-          status=$?
-          tail -n 500 /tmp/review-frontend.log > .review-frontend.log
-          exit $status
+          pnpm build
+          pnpm test
+          pnpm i18n:check
 
       - name: Rust checks
-        id: rust
-        if: always()
-        continue-on-error: true
         working-directory: src-tauri
         run: |
-          set +e
-          {
-            cargo fmt --check
-            cargo test
-            cargo clippy -- -D warnings
-          } > /tmp/review-rust.log 2>&1
-          status=$?
-          tail -n 700 /tmp/review-rust.log > ../.review-rust.log
-          exit $status
+          cargo fmt --check
+          cargo test
+          cargo clippy -- -D warnings
 
-      - name: Record and commit review result
-        if: always()
+      - name: Commit applied fixes
         run: |
-          printf 'checkout=%s\nfixes=%s\nnode=%s\npnpm=%s\nrust_setup=%s\nsystem_deps=%s\nfrontend_deps=%s\nrust_format=%s\nfrontend=%s\nrust=%s\n' \
-            '${{ steps.checkout.outcome }}' \
-            '${{ steps.fixes.outcome }}' \
-            '${{ steps.node.outcome }}' \
-            '${{ steps.pnpm.outcome }}' \
-            '${{ steps.rust_setup.outcome }}' \
-            '${{ steps.system_deps.outcome }}' \
-            '${{ steps.frontend_deps.outcome }}' \
-            '${{ steps.rust_format.outcome }}' \
-            '${{ steps.frontend.outcome }}' \
-            '${{ steps.rust.outcome }}' > .review-ci-status
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
           if ! git diff --cached --quiet; then
-            git commit -m 'fix: apply workspace-sync review fixes [review-ci]'
+            git commit -m 'fix: finish workspace-sync security review [review-ci]'
+            git pull --rebase origin review/codex-workspace-sync
             git push origin HEAD:review/codex-workspace-sync
           fi
-
-      - name: Fail when verification failed
-        if: always() && (steps.fixes.outcome != 'success' || steps.frontend.outcome != 'success' || steps.rust.outcome != 'success')
-        run: exit 1
