@@ -31,6 +31,7 @@ jobs:
           python3 scripts/review-workspace-sync-fix-4.py
           python3 scripts/review-workspace-sync-fix-5.py
           python3 scripts/review-workspace-sync-fix-6.py
+          python3 scripts/review-workspace-sync-fix-7.py
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
