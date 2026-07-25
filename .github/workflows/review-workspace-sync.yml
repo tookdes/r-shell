@@ -40,8 +40,6 @@ jobs:
         if: always()
         uses: pnpm/action-setup@v4
         continue-on-error: true
-        with:
-          version: 9.15.4
 
       - name: Setup Rust
         id: rust_setup
