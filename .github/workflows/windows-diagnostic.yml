@@ -1,0 +1,52 @@
+name: Windows Rust diagnostic
+
+on:
+  push:
+    branches:
+      - review/codex-workspace-sync
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-rust-diagnostic
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    if: ${{ !contains(github.event.head_commit.message, '[windows-diagnostic]') }}
+    runs-on: windows-latest
+    steps:
+      - name: Checkout review branch
+        uses: actions/checkout@v4
+        with:
+          ref: review/codex-workspace-sync
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Capture Windows Rust test output
+        shell: pwsh
+        run: |
+          Set-Location src-tauri
+          cargo test *>&1 | Tee-Object -FilePath ../windows-rust-test.log
+          $code = $LASTEXITCODE
+          Set-Location ..
+          "exit_code=$code" | Out-File -FilePath windows-rust-test-status.txt -Encoding utf8
+          exit 0
+
+      - name: Commit diagnostic output
+        shell: pwsh
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add windows-rust-test.log windows-rust-test-status.txt
+          git commit -m "chore: capture Windows Rust test failure [windows-diagnostic]"
+          git pull --rebase origin review/codex-workspace-sync
+          git push origin HEAD:review/codex-workspace-sync
