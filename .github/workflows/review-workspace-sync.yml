@@ -32,6 +32,7 @@ jobs:
             python3 scripts/review-workspace-sync-fix-2.py
             python3 scripts/review-workspace-sync-fix-3.py
             python3 scripts/review-workspace-sync-fix-4.py
+            python3 scripts/review-workspace-sync-fix-5.py
           } > /tmp/review-fixes.log 2>&1
           status=$?
           tail -n 300 /tmp/review-fixes.log > .review-fixes.log
