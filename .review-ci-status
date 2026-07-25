@@ -1,2 +1,8 @@
-frontend=skipped
-rust=skipped
+checkout=success
+node=success
+pnpm=failure
+rust_setup=success
+system_deps=success
+frontend_deps=failure
+frontend=failure
+rust=failure
