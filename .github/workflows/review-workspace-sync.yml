@@ -25,7 +25,9 @@ jobs:
         id: fixes
         if: always()
         continue-on-error: true
-        run: python3 scripts/review-workspace-sync-fix.py
+        run: |
+          python3 scripts/review-workspace-sync-fix.py
+          python3 scripts/review-workspace-sync-fix-2.py
 
       - name: Setup Node.js
         id: node
