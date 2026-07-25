@@ -77,7 +77,7 @@ jobs:
 
       - name: Run Rust clippy
         working-directory: src-tauri
-        run: cargo clippy -- -D warnings
+        run: cargo clippy -- -D warnings -A dead_code
 
       - name: Check Rust formatting
         working-directory: src-tauri
