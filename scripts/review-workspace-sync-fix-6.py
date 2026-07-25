@@ -33,11 +33,8 @@ replace_once(
     return false;""",
 )
 
-replace_once(
-    "src/components/connection-dialog.tsx",
-    "  proxyType?: 'none' | 'http' | 'socks4' | 'socks5';",
-    "  proxyType?: 'none' | 'http' | 'socks5';",
-)
+# Keep the stored-data union compatible with legacy profiles, but do not expose
+# an option that the backend cannot establish.
 replace_once(
     "src/components/connection-dialog.tsx",
     "                       <SelectItem value=\"socks4\">{t('connectionDialog.proxy.socks4')}</SelectItem>\n",
