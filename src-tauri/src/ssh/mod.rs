@@ -38,6 +38,12 @@ pub struct SshConfig {
     /// When true (default), use TOFU known_hosts verification.
     #[serde(default = "default_verify_host_key")]
     pub verify_host_key: bool,
+    /// Optional proxy (HTTP CONNECT / SOCKS5).
+    #[serde(default)]
+    pub proxy: Option<crate::proxy_stream::ProxyConfig>,
+    /// Commands to send once the interactive shell is ready (joined with \n).
+    #[serde(default)]
+    pub startup_command: Option<String>,
 }
 
 fn default_verify_host_key() -> bool {
@@ -51,7 +57,12 @@ pub enum AuthMethod {
         password: String,
     },
     PublicKey {
-        key_path: String,
+        /// Filesystem path to a private key (optional if key_data is set).
+        #[serde(default)]
+        key_path: Option<String>,
+        /// Inline PEM / OpenSSH private key content (optional if key_path is set).
+        #[serde(default)]
+        key_data: Option<String>,
         passphrase: Option<String>,
     },
 }
@@ -65,6 +76,8 @@ pub struct SshSession {
 
 pub struct SshClient {
     session: Option<Arc<client::Handle<Client>>>,
+    /// Startup commands to inject after the interactive shell is ready.
+    startup_command: Option<String>,
 }
 
 // PTY session handle for interactive shell
@@ -105,18 +118,79 @@ impl client::Handler for Client {
         &mut self,
         server_public_key: &key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        Ok(crate::known_hosts::check_or_remember(
+        Ok(crate::known_hosts::check_or_prompt(
             &self.host,
             self.port,
             server_public_key,
             self.verify_host_key,
-        ))
+        )
+        .await)
     }
+}
+
+
+/// Load a private key from inline PEM content or a filesystem path.
+pub fn load_private_key(
+    key_path: Option<&str>,
+    key_data: Option<&str>,
+    passphrase: Option<&str>,
+) -> Result<key::KeyPair> {
+    if let Some(data) = key_data.map(str::trim).filter(|s| !s.is_empty()) {
+        let normalized = data.replace("\r\n", "\n");
+        return decode_secret_key(&normalized, passphrase)
+            .map_err(|e| anyhow::anyhow!("Failed to parse inline private key: {}", e));
+    }
+
+    let key_path = key_path
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Private key path or key content is required"))?;
+
+    if key_path.contains("BEGIN") && key_path.contains("PRIVATE KEY") {
+        let normalized = key_path.replace("\r\n", "\n");
+        return decode_secret_key(&normalized, passphrase)
+            .map_err(|e| anyhow::anyhow!("Failed to parse pasted private key: {}", e));
+    }
+
+    let expanded_path = if key_path.starts_with("~/") || key_path.starts_with("~\\") {
+        if let Some(home) = dirs::home_dir() {
+            let home_str = home.to_string_lossy();
+            key_path.replacen('~', &home_str, 1)
+        } else {
+            key_path.to_string()
+        }
+    } else {
+        key_path.to_string()
+    };
+
+    if !std::path::Path::new(&expanded_path).exists() {
+        return Err(anyhow::anyhow!(
+            "SSH key file not found: {}. Please check the file path and try again.",
+            key_path
+        ));
+    }
+
+    let key_content = std::fs::read_to_string(&expanded_path).map_err(|e| {
+        anyhow::anyhow!("Failed to read SSH key file {}: {}", key_path, e)
+    })?;
+    let key_content = key_content.replace("\r\n", "\n");
+    decode_secret_key(&key_content, passphrase).map_err(|e| {
+        if e.to_string().contains("encrypted") || e.to_string().contains("passphrase") {
+            anyhow::anyhow!(
+                "Failed to decrypt SSH key. The key may be encrypted. Please provide the correct passphrase."
+            )
+        } else {
+            anyhow::anyhow!(
+                "Failed to load SSH key from {}: {}. Ensure the file is a valid SSH private key.",
+                key_path, e
+            )
+        }
+    })
 }
 
 impl SshClient {
     pub fn new() -> Self {
-        Self { session: None }
+        Self { session: None, startup_command: None }
     }
 
     pub async fn connect(&mut self, config: &SshConfig) -> Result<()> {
@@ -146,13 +220,20 @@ impl SshClient {
         let connection_timeout = Duration::from_secs(timeout_secs);
 
         let handler = Client::new(config.host.clone(), config.port, config.verify_host_key);
-        let mut ssh_session = tokio::time::timeout(
-            connection_timeout,
-            client::connect(Arc::new(ssh_config), (&config.host[..], config.port), handler),
-        )
+        let proxy = config.proxy.clone();
+        let host = config.host.clone();
+        let port = config.port;
+        let ssh_config = Arc::new(ssh_config);
+
+        let mut ssh_session = tokio::time::timeout(connection_timeout, async {
+            let stream = crate::proxy_stream::connect_tcp(&host, port, proxy.as_ref())
+                .await
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            client::connect_stream(ssh_config, stream, handler).await
+        })
         .await
             .map_err(|_| anyhow::anyhow!(
-                "Connection timed out after {} seconds. Please check the host address and network connectivity.",
+                "Connection timed out after {} seconds. Please check the host address, proxy, and network connectivity.",
                 timeout_secs
             ))?
             .map_err(|e| {
@@ -174,52 +255,14 @@ impl SshClient {
                 .map_err(|e| anyhow::anyhow!("Password authentication failed: {}", e))?,
             AuthMethod::PublicKey {
                 key_path,
+                key_data,
                 passphrase,
             } => {
-                // Expand tilde in path — use dirs::home_dir() for cross-platform
-                // support (HOME is not set on Windows; USERPROFILE is used instead).
-                let expanded_path = if key_path.starts_with("~/") || key_path.starts_with("~\\") {
-                    if let Some(home) = dirs::home_dir() {
-                        let home_str = home.to_string_lossy();
-                        key_path.replacen('~', &home_str, 1)
-                    } else {
-                        key_path.clone()
-                    }
-                } else {
-                    key_path.clone()
-                };
-
-                // Check if file exists
-                if !std::path::Path::new(&expanded_path).exists() {
-                    return Err(anyhow::anyhow!(
-                        "SSH key file not found: {}. Please check the file path and try again.",
-                        key_path
-                    ));
-                }
-
-                // Read the key file and normalise CRLF line endings so that keys
-                // created or edited on Windows (which use \r\n) are parsed correctly
-                // by russh-keys' PEM / OpenSSH decoder.
-                let key_content = std::fs::read_to_string(&expanded_path).map_err(|e| {
-                    anyhow::anyhow!("Failed to read SSH key file {}: {}", key_path, e)
-                })?;
-                let key_content = key_content.replace("\r\n", "\n");
-
-                // decode_secret_key takes the key *content* as a &str.
-                let key = decode_secret_key(&key_content, passphrase.as_deref())
-                    .map_err(|e| {
-                        if e.to_string().contains("encrypted") || e.to_string().contains("passphrase") {
-                            anyhow::anyhow!(
-                                "Failed to decrypt SSH key. The key may be encrypted. Please provide the correct passphrase."
-                            )
-                        } else {
-                            anyhow::anyhow!(
-                                "Failed to load SSH key from {}: {}. Ensure the file is a valid SSH private key (RSA, Ed25519, or ECDSA).",
-                                key_path, e
-                            )
-                        }
-                    })?;
-
+                let key = load_private_key(
+                    key_path.as_deref(),
+                    key_data.as_deref(),
+                    passphrase.as_deref(),
+                )?;
                 ssh_session
                     .authenticate_publickey(&config.username, Arc::new(key))
                     .await
@@ -233,6 +276,7 @@ impl SshClient {
             ));
         }
 
+        self.startup_command = config.startup_command.clone();
         self.session = Some(Arc::new(ssh_session));
         Ok(())
     }
@@ -354,6 +398,24 @@ impl SshClient {
 
             // Create a channel for resize requests
             let (resize_tx, mut resize_rx) = mpsc::channel::<(u32, u32)>(16);
+
+            // Optional startup command (sent once shell is ready).
+            if let Some(cmd) = self.startup_command.clone() {
+                let cmd = cmd.trim().to_string();
+                if !cmd.is_empty() {
+                    let startup_tx = input_tx.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                        let mut payload = cmd.replace("\r\n", "\n").replace('\r', "\n");
+                        if !payload.ends_with('\n') {
+                            payload.push('\n');
+                        }
+                        // SSH PTY expects CR as line terminator for most shells.
+                        let bytes = payload.replace('\n', "\r").into_bytes();
+                        let _ = startup_tx.send(bytes).await;
+                    });
+                }
+            }
 
             // Spawn task to handle input (frontend → SSH)
             // This is similar to ttyd's pty_write and INPUT command handling

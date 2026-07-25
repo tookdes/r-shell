@@ -22,6 +22,8 @@ pub struct SftpConfig {
     pub keepalive_interval_secs: Option<u64>,
     #[serde(default = "default_verify_host_key")]
     pub verify_host_key: bool,
+    #[serde(default)]
+    pub proxy: Option<crate::proxy_stream::ProxyConfig>,
 }
 
 fn default_verify_host_key() -> bool {
@@ -35,7 +37,10 @@ pub enum SftpAuthMethod {
         password: String,
     },
     PublicKey {
-        key_path: String,
+        #[serde(default)]
+        key_path: Option<String>,
+        #[serde(default)]
+        key_data: Option<String>,
         passphrase: Option<String>,
     },
 }
@@ -102,19 +107,21 @@ impl StandaloneSftpClient {
             .unwrap_or(30);
         let connection_timeout = Duration::from_secs(timeout_secs);
         let handler = Client::new(config.host.clone(), config.port, config.verify_host_key);
+        let proxy = config.proxy.clone();
+        let host = config.host.clone();
+        let port = config.port;
+        let ssh_config = Arc::new(ssh_config);
 
-        let mut ssh_session = tokio::time::timeout(
-            connection_timeout,
-            client::connect(
-                Arc::new(ssh_config),
-                (&config.host[..], config.port),
-                handler,
-            ),
-        )
+        let mut ssh_session = tokio::time::timeout(connection_timeout, async {
+            let stream = crate::proxy_stream::connect_tcp(&host, port, proxy.as_ref())
+                .await
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            client::connect_stream(ssh_config, stream, handler).await
+        })
         .await
         .map_err(|_| {
             anyhow::anyhow!(
-                "SFTP connection timed out after {} seconds. Please check the host and network.",
+                "SFTP connection timed out after {} seconds. Please check the host, proxy, and network.",
                 timeout_secs
             )
         })?
@@ -135,38 +142,14 @@ impl StandaloneSftpClient {
                 .map_err(|e| anyhow::anyhow!("SFTP password authentication failed: {}", e))?,
             SftpAuthMethod::PublicKey {
                 key_path,
+                key_data,
                 passphrase,
             } => {
-                let expanded_path = if key_path.starts_with("~/") {
-                    if let Ok(home) = std::env::var("HOME") {
-                        key_path.replacen("~", &home, 1)
-                    } else {
-                        key_path.clone()
-                    }
-                } else {
-                    key_path.clone()
-                };
-
-                if !std::path::Path::new(&expanded_path).exists() {
-                    return Err(anyhow::anyhow!(
-                        "SSH key file not found: {}. Please check the file path.",
-                        key_path
-                    ));
-                }
-
-                let key =
-                    decode_secret_key(&expanded_path, passphrase.as_deref()).map_err(|e| {
-                        if e.to_string().contains("encrypted")
-                            || e.to_string().contains("passphrase")
-                        {
-                            anyhow::anyhow!(
-                                "Failed to decrypt SSH key. Please provide the correct passphrase."
-                            )
-                        } else {
-                            anyhow::anyhow!("Failed to load SSH key from {}: {}.", key_path, e)
-                        }
-                    })?;
-
+                let key = crate::ssh::load_private_key(
+                    key_path.as_deref(),
+                    key_data.as_deref(),
+                    passphrase.as_deref(),
+                )?;
                 ssh_session
                     .authenticate_publickey(&config.username, Arc::new(key))
                     .await

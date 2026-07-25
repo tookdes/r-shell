@@ -15,6 +15,7 @@ import { Separator } from './ui/separator';
 import { ConnectionProfileManager, type ConnectionProfile } from '../lib/connection-profiles';
 import { ConnectionStorageManager } from '../lib/connection-storage';
 import { buildTransportInvokeFields } from '../lib/connection-transport-settings';
+import { encryptConnectionSecrets } from '../lib/secrets';
 import { toast } from 'sonner';
 import {
   Server,
@@ -24,7 +25,7 @@ import {
   Terminal as TerminalIcon,
   Monitor,
 } from 'lucide-react';
-import { getDefaultPort, getAuthMethods, getHiddenFields, isDesktopProtocol } from '@/lib/protocol-config';
+import { getDefaultPort, getAuthMethods, getHiddenFields, isDesktopProtocol, isRdpProtocol } from '@/lib/protocol-config';
 
 interface ConnectionDialogProps {
   open: boolean;
@@ -43,7 +44,9 @@ export interface ConnectionConfig {
   authMethod: 'password' | 'publickey' | 'keyboard-interactive' | 'anonymous';
   password?: string;
   privateKeyPath?: string;
+  privateKeyData?: string;
   passphrase?: string;
+  startupCommand?: string;
 
   // Advanced options
   proxyType?: 'none' | 'http' | 'socks4' | 'socks5';
@@ -84,7 +87,9 @@ export function ConnectionDialog({
     authMethod: 'password',
     password: '',
     privateKeyPath: '',
+    privateKeyData: '',
     passphrase: '',
+    startupCommand: '',
     proxyType: 'none',
     proxyHost: '',
     proxyPort: 8080,
@@ -229,7 +234,7 @@ export function ConnectionDialog({
       return;
     }
 
-    if (config.authMethod === 'publickey' && !config.privateKeyPath) {
+    if (config.authMethod === 'publickey' && !config.privateKeyPath && !config.privateKeyData) {
       toast.error(t('connectionDialog.toast.privateKeyRequired'), {
         description: t('connectionDialog.toast.privateKeyRequiredDesc'),
       });
@@ -237,7 +242,15 @@ export function ConnectionDialog({
       return;
     }
 
-    // For SFTP/FTP/RDP/VNC protocols, delegate connection to App.tsx (via onConnect)
+    if (isRdpProtocol(config.protocol)) {
+      toast.error(t('app.rdpDisabled'), {
+        description: t('app.rdpDisabledDesc'),
+      });
+      resetConnectionState();
+      return;
+    }
+
+    // For SFTP/FTP/VNC protocols, delegate connection to App.tsx (via onConnect)
     // which calls the appropriate Tauri commands.
     const isSftpOrFtp = config.protocol === 'SFTP' || config.protocol === 'FTP';
     const isDesktop = config.protocol === 'RDP' || config.protocol === 'VNC';
@@ -307,13 +320,26 @@ export function ConnectionDialog({
             auth_method: config.authMethod || 'password',
             password: config.password || '',
             key_path: config.privateKeyPath || null,
+            key_data: config.privateKeyData || null,
             passphrase: config.passphrase || null,
             ...buildTransportInvokeFields(),
+            proxy_type: config.proxyType && config.proxyType !== 'none' ? config.proxyType : null,
+            proxy_host: config.proxyHost || null,
+            proxy_port: config.proxyPort || null,
+            proxy_username: config.proxyUsername || null,
+            proxy_password: config.proxyPassword || null,
+            startup_command: config.startupCommand || null,
           }
         }
       );
 
       if (result.success) {
+        const secretsForStorage = await encryptConnectionSecrets({
+          password: config.password,
+          passphrase: config.passphrase,
+          privateKeyData: config.privateKeyData,
+          proxyPassword: config.proxyPassword,
+        });
         // Save or update connection based on whether we're editing or creating new
         if (editingConnection?.id) {
           // Update existing connection with new connection details
@@ -324,9 +350,16 @@ export function ConnectionDialog({
             username: config.username,
             protocol: config.protocol,
             authMethod: config.authMethod,
-            password: config.password,
+            password: secretsForStorage.password,
             privateKeyPath: config.privateKeyPath,
-            passphrase: config.passphrase,
+            privateKeyData: secretsForStorage.privateKeyData,
+            passphrase: secretsForStorage.passphrase,
+            proxyType: config.proxyType,
+            proxyHost: config.proxyHost,
+            proxyPort: config.proxyPort,
+            proxyUsername: config.proxyUsername,
+            proxyPassword: secretsForStorage.proxyPassword,
+            startupCommand: config.startupCommand,
             lastConnected: new Date().toISOString(),
           });
         } else if (saveAsConnection) {
@@ -340,9 +373,16 @@ export function ConnectionDialog({
             protocol: config.protocol,
             folder: connectionFolder,
             authMethod: config.authMethod,
-            password: config.password,
+            password: secretsForStorage.password,
             privateKeyPath: config.privateKeyPath,
-            passphrase: config.passphrase,
+            privateKeyData: secretsForStorage.privateKeyData,
+            passphrase: secretsForStorage.passphrase,
+            proxyType: config.proxyType,
+            proxyHost: config.proxyHost,
+            proxyPort: config.proxyPort,
+            proxyUsername: config.proxyUsername,
+            proxyPassword: secretsForStorage.proxyPassword,
+            startupCommand: config.startupCommand,
           });
         }
 
@@ -699,9 +739,18 @@ export function ConnectionDialog({
                         value={config.privateKeyPath}
                         onChange={(e) => updateConfig({ privateKeyPath: e.target.value })}
                       />
-                      <p className="text-xs text-muted-foreground">
-                        {t('connectionDialog.placeholder.privateKey')}
-                      </p>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="private-key-data">{t('connectionDialog.label.privateKeyData')}</Label>
+                      <textarea
+                        id="private-key-data"
+                        className="flex min-h-[88px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-xs font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        placeholder={t('connectionDialog.placeholder.privateKeyData')}
+                        value={config.privateKeyData || ''}
+                        onChange={(e) => updateConfig({ privateKeyData: e.target.value })}
+                        spellCheck={false}
+                        autoComplete="off"
+                      />
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="passphrase">{t('connectionDialog.label.passphrase')}</Label>
@@ -713,6 +762,19 @@ export function ConnectionDialog({
                         onChange={(e) => updateConfig({ passphrase: e.target.value })}
                       />
                     </div>
+                  </div>
+                )}
+
+                {(config.protocol === 'SSH' || config.protocol === 'Telnet' || config.protocol === 'Raw') && (
+                  <div className="space-y-2">
+                    <Label htmlFor="startup-command">{t('connectionDialog.label.startupCommand')}</Label>
+                    <Input
+                      id="startup-command"
+                      placeholder={t('connectionDialog.placeholder.startupCommand')}
+                      value={config.startupCommand || ''}
+                      onChange={(e) => updateConfig({ startupCommand: e.target.value })}
+                    />
+                    <p className="text-xs text-muted-foreground">{t('connectionDialog.startupCommandDesc')}</p>
                   </div>
                 )}
 
