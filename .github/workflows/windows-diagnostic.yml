@@ -26,16 +26,12 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Compare minimal Rust and project executables
-        timeout-minutes: 20
-        continue-on-error: true
+      - name: Diagnose minimal Rust loader
         shell: pwsh
         run: |
           $output = Join-Path $PWD 'windows-rust-test-output.txt'
           "runner=windows-2022" | Out-File -FilePath $output -Encoding utf8
-          "`n==== RUST TOOLCHAIN ====" | Out-File -FilePath $output -Append
           rustc -vV *>&1 | Out-File -FilePath $output -Append
-          cargo -V *>&1 | Out-File -FilePath $output -Append
 
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $installPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -45,16 +41,15 @@ jobs:
           "DUMPBIN=$($dumpbin.FullName)" | Out-File -FilePath $output -Append
 
           "`n==== BCRYPTPRIMITIVES CANDIDATES ====" | Out-File -FilePath $output -Append
-          $candidatePaths = @(
+          $paths = @(
             (Join-Path $env:SystemRoot 'System32\bcryptprimitives.dll'),
             (Join-Path $env:SystemRoot 'SysWOW64\bcryptprimitives.dll'),
             (Join-Path $PWD 'bcryptprimitives.dll')
           )
           foreach ($dir in ($env:PATH -split ';')) {
-            if ($dir) { $candidatePaths += (Join-Path $dir 'bcryptprimitives.dll') }
+            if ($dir) { $paths += (Join-Path $dir 'bcryptprimitives.dll') }
           }
-          $candidatePaths += Get-ChildItem $PWD -Recurse -Filter bcryptprimitives.dll -ErrorAction SilentlyContinue | ForEach-Object FullName
-          $candidatePaths | Where-Object { $_ -and (Test-Path $_) } | Sort-Object -Unique | ForEach-Object {
+          $paths | Where-Object { $_ -and (Test-Path $_) } | Sort-Object -Unique | ForEach-Object {
             $item = Get-Item $_
             "PATH=$($item.FullName)" | Out-File -FilePath $output -Append
             "VERSION=$($item.VersionInfo.FileVersion)" | Out-File -FilePath $output -Append
@@ -66,58 +61,35 @@ jobs:
             }
           }
 
+          "`n==== KNOWN DLLS ====" | Out-File -FilePath $output -Append
+          Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\KnownDLLs' -ErrorAction SilentlyContinue |
+            Format-List *bcrypt* |
+            Out-String -Width 500 |
+            Out-File -FilePath $output -Append
+
           "fn main() { println!(\"minimal-ok\"); }" | Out-File -FilePath minimal.rs -Encoding ascii
           rustc minimal.rs -o minimal-rust.exe *>&1 | Out-File -FilePath $output -Append
-          $minimalBuild = $LASTEXITCODE
-          "`n==== MINIMAL IMPORTS ====" | Out-File -FilePath $output -Append
+          $buildCode = $LASTEXITCODE
+
+          "`n==== MINIMAL DEPENDENCIES ====" | Out-File -FilePath $output -Append
           if ($dumpbin -and (Test-Path minimal-rust.exe)) {
             & $dumpbin.FullName /DEPENDENTS minimal-rust.exe *>&1 | Out-File -FilePath $output -Append
+            "`n==== MINIMAL RNG IMPORTS ====" | Out-File -FilePath $output -Append
             & $dumpbin.FullName /IMPORTS minimal-rust.exe *>&1 |
               Select-String -Pattern 'bcryptprimitives|ProcessPrng|SystemFunction036' |
               Out-File -FilePath $output -Append
           }
+
           "`n==== RUN MINIMAL ====" | Out-File -FilePath $output -Append
           if (Test-Path minimal-rust.exe) {
             & .\minimal-rust.exe *>&1 | Out-File -FilePath $output -Append
-            $minimalRun = $LASTEXITCODE
-          } else {
-            $minimalRun = -1
-          }
-
-          Set-Location src-tauri
-          "`n==== PROJECT BUILD ====" | Out-File -FilePath $output -Append
-          cargo test --no-run *>&1 | Tee-Object -FilePath $output -Append
-          $buildCode = $LASTEXITCODE
-          $exe = Get-ChildItem 'target\debug\deps\r_shell_lib-*.exe' -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -First 1
-
-          "`n==== LOCAL DLLS ====" | Out-File -FilePath $output -Append
-          Get-ChildItem 'target\debug\deps\*.dll' -ErrorAction SilentlyContinue |
-            Select-Object -ExpandProperty FullName |
-            Out-File -FilePath $output -Append
-
-          if ($exe -and $dumpbin) {
-            "`n==== PROJECT DEPENDENTS ====" | Out-File -FilePath $output -Append
-            & $dumpbin.FullName /DEPENDENTS $exe.FullName *>&1 | Out-File -FilePath $output -Append
-            "`n==== PROJECT RNG IMPORTS ====" | Out-File -FilePath $output -Append
-            & $dumpbin.FullName /IMPORTS $exe.FullName *>&1 |
-              Select-String -Pattern 'bcryptprimitives|ProcessPrng|SystemFunction036' |
-              Out-File -FilePath $output -Append
-          }
-
-          "`n==== RUN PROJECT TEST EXE ====" | Out-File -FilePath $output -Append
-          if ($exe) {
-            & $exe.FullName --list *>&1 | Out-File -FilePath $output -Append
             $runCode = $LASTEXITCODE
           } else {
             $runCode = -1
           }
 
-          Set-Location ..
-          "minimal_build_exit_code=$minimalBuild`nminimal_run_exit_code=$minimalRun`nbuild_exit_code=$buildCode`nrun_exit_code=$runCode" | Out-File -FilePath windows-rust-test-status.txt -Encoding utf8
+          "minimal_build_exit_code=$buildCode`nminimal_run_exit_code=$runCode" | Out-File -FilePath windows-rust-test-status.txt -Encoding utf8
           Remove-Item minimal.rs, minimal-rust.exe -ErrorAction SilentlyContinue
-          exit 0
 
       - name: Commit diagnostic output
         if: always()
@@ -125,9 +97,9 @@ jobs:
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add src-tauri/Cargo.lock windows-rust-test-output.txt windows-rust-test-status.txt
+          git add windows-rust-test-output.txt windows-rust-test-status.txt
           if (-not (git diff --cached --quiet)) {
-            git commit -m "chore: compare Windows Rust loader behavior [windows-diagnostic]"
+            git commit -m "chore: capture minimal Windows loader test [windows-diagnostic]"
             git pull --rebase origin review/codex-workspace-sync
             git push origin HEAD:review/codex-workspace-sync
           }
