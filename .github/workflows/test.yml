@@ -11,7 +11,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [macos-latest, ubuntu-latest, windows-latest]
+        # windows-latest currently resolves to the Windows Server 2025 / VS 2026
+        # image, where the Rust test executable fails during DLL loading with
+        # STATUS_ENTRYPOINT_NOT_FOUND before any tests run. Pin the stable image.
+        platform: [macos-latest, ubuntu-latest, windows-2022]
 
     runs-on: ${{ matrix.platform }}
 
