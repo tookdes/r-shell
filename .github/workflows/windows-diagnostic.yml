@@ -1,4 +1,4 @@
-name: Windows Rust diagnostic
+name: Sync Cargo lock
 
 on:
   push:
@@ -9,13 +9,13 @@ permissions:
   contents: write
 
 concurrency:
-  group: windows-rust-diagnostic
+  group: cargo-lock-sync
   cancel-in-progress: true
 
 jobs:
-  diagnose:
-    if: ${{ !contains(github.event.head_commit.message, '[windows-diagnostic]') }}
-    runs-on: windows-2022
+  sync:
+    if: ${{ !contains(github.event.head_commit.message, '[lock-sync]') }}
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout review branch
         uses: actions/checkout@v4
@@ -26,80 +26,16 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Diagnose minimal Rust loader
-        shell: pwsh
-        run: |
-          $output = Join-Path $PWD 'windows-rust-test-output.txt'
-          "runner=windows-2022" | Out-File -FilePath $output -Encoding utf8
-          rustc -vV *>&1 | Out-File -FilePath $output -Append
+      - name: Resolve Cargo lockfile
+        run: cargo metadata --manifest-path src-tauri/Cargo.toml --format-version 1 > /dev/null
 
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $installPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          $dumpbin = Get-ChildItem $installPath -Recurse -Filter dumpbin.exe -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -match 'Hostx64\\x64\\dumpbin.exe$' } |
-            Select-Object -First 1
-          "DUMPBIN=$($dumpbin.FullName)" | Out-File -FilePath $output -Append
-
-          "`n==== BCRYPTPRIMITIVES CANDIDATES ====" | Out-File -FilePath $output -Append
-          $paths = @(
-            (Join-Path $env:SystemRoot 'System32\bcryptprimitives.dll'),
-            (Join-Path $env:SystemRoot 'SysWOW64\bcryptprimitives.dll'),
-            (Join-Path $PWD 'bcryptprimitives.dll')
-          )
-          foreach ($dir in ($env:PATH -split ';')) {
-            if ($dir) { $paths += (Join-Path $dir 'bcryptprimitives.dll') }
-          }
-          $paths | Where-Object { $_ -and (Test-Path $_) } | Sort-Object -Unique | ForEach-Object {
-            $item = Get-Item $_
-            "PATH=$($item.FullName)" | Out-File -FilePath $output -Append
-            "VERSION=$($item.VersionInfo.FileVersion)" | Out-File -FilePath $output -Append
-            "SHA256=$((Get-FileHash $item.FullName -Algorithm SHA256).Hash)" | Out-File -FilePath $output -Append
-            if ($dumpbin) {
-              & $dumpbin.FullName /EXPORTS $item.FullName *>&1 |
-                Select-String -Pattern 'ProcessPrng|ordinal|File Type' |
-                Out-File -FilePath $output -Append
-            }
-          }
-
-          "`n==== KNOWN DLLS ====" | Out-File -FilePath $output -Append
-          Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\KnownDLLs' -ErrorAction SilentlyContinue |
-            Format-List *bcrypt* |
-            Out-String -Width 500 |
-            Out-File -FilePath $output -Append
-
-          "fn main() { println!(\"minimal-ok\"); }" | Out-File -FilePath minimal.rs -Encoding ascii
-          rustc minimal.rs -o minimal-rust.exe *>&1 | Out-File -FilePath $output -Append
-          $buildCode = $LASTEXITCODE
-
-          "`n==== MINIMAL DEPENDENCIES ====" | Out-File -FilePath $output -Append
-          if ($dumpbin -and (Test-Path minimal-rust.exe)) {
-            & $dumpbin.FullName /DEPENDENTS minimal-rust.exe *>&1 | Out-File -FilePath $output -Append
-            "`n==== MINIMAL RNG IMPORTS ====" | Out-File -FilePath $output -Append
-            & $dumpbin.FullName /IMPORTS minimal-rust.exe *>&1 |
-              Select-String -Pattern 'bcryptprimitives|ProcessPrng|SystemFunction036' |
-              Out-File -FilePath $output -Append
-          }
-
-          "`n==== RUN MINIMAL ====" | Out-File -FilePath $output -Append
-          if (Test-Path minimal-rust.exe) {
-            & .\minimal-rust.exe *>&1 | Out-File -FilePath $output -Append
-            $runCode = $LASTEXITCODE
-          } else {
-            $runCode = -1
-          }
-
-          "minimal_build_exit_code=$buildCode`nminimal_run_exit_code=$runCode" | Out-File -FilePath windows-rust-test-status.txt -Encoding utf8
-          Remove-Item minimal.rs, minimal-rust.exe -ErrorAction SilentlyContinue
-
-      - name: Commit diagnostic output
-        if: always()
-        shell: pwsh
+      - name: Commit lockfile update
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add windows-rust-test-output.txt windows-rust-test-status.txt
-          if (-not (git diff --cached --quiet)) {
-            git commit -m "chore: capture minimal Windows loader test [windows-diagnostic]"
+          git add src-tauri/Cargo.lock
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: synchronize Cargo lockfile [lock-sync]"
             git pull --rebase origin review/codex-workspace-sync
             git push origin HEAD:review/codex-workspace-sync
-          }
+          fi
