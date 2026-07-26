@@ -93,7 +93,7 @@ jobs:
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add windows-rust-test-output.txt windows-rust-test-status.txt
+          git add src-tauri/Cargo.lock windows-rust-test-output.txt windows-rust-test-status.txt
           if (-not (git diff --cached --quiet)) {
             git commit -m "chore: capture Windows loader imports [windows-diagnostic]"
             git pull --rebase origin review/codex-workspace-sync
