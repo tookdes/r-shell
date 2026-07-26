@@ -11,9 +11,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # windows-latest currently resolves to the Windows Server 2025 / VS 2026
-        # image, where the Rust test executable fails during DLL loading with
-        # STATUS_ENTRYPOINT_NOT_FOUND before any tests run. Pin the stable image.
         platform: [macos-latest, ubuntu-latest, windows-2022]
 
     runs-on: ${{ matrix.platform }}
@@ -67,8 +64,72 @@ jobs:
         run: pnpm tsc --noEmit
 
       - name: Run Rust tests
+        if: matrix.platform != 'windows-2022'
         working-directory: src-tauri
         run: cargo test
+
+      - name: Run and diagnose Windows Rust tests
+        if: matrix.platform == 'windows-2022'
+        working-directory: src-tauri
+        shell: pwsh
+        run: |
+          cargo test --no-run
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $exe = Get-ChildItem 'target\debug\deps\r_shell_lib-*.exe' |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if (-not $exe) { throw 'Rust test executable not found' }
+
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $dumpbin = Get-ChildItem $installPath -Recurse -Filter dumpbin.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match 'Hostx64\\x64\\dumpbin.exe$' } |
+            Select-Object -First 1
+
+          Write-Host "TEST_EXE=$($exe.FullName)"
+          Write-Host "DUMPBIN=$($dumpbin.FullName)"
+          Write-Host '=== Local DLLs beside test executables ==='
+          Get-ChildItem 'target\debug\deps\*.dll' -ErrorAction SilentlyContinue |
+            ForEach-Object {
+              Write-Host "$($_.FullName) version=$($_.VersionInfo.FileVersion)"
+            }
+
+          foreach ($name in @('bcryptprimitives.dll', 'VCRUNTIME140.dll', 'VCRUNTIME140_1.dll')) {
+            Write-Host "=== Candidates for $name ==="
+            $paths = @(
+              (Join-Path $env:SystemRoot "System32\$name"),
+              (Join-Path $env:SystemRoot "SysWOW64\$name"),
+              (Join-Path $PWD "target\debug\deps\$name")
+            )
+            foreach ($dir in ($env:PATH -split ';')) {
+              if ($dir) { $paths += (Join-Path $dir $name) }
+            }
+            $paths | Where-Object { $_ -and (Test-Path $_) } | Sort-Object -Unique | ForEach-Object {
+              $item = Get-Item $_
+              Write-Host "PATH=$($item.FullName) version=$($item.VersionInfo.FileVersion) sha256=$((Get-FileHash $item.FullName -Algorithm SHA256).Hash)"
+              if ($dumpbin) {
+                & $dumpbin.FullName /EXPORTS $item.FullName |
+                  Select-String -Pattern 'ProcessPrng|__current_exception|__CxxFrameHandler3|terminate' |
+                  ForEach-Object { Write-Host $_.Line }
+              }
+            }
+          }
+
+          Write-Host '=== Test executable dependencies ==='
+          if ($dumpbin) { & $dumpbin.FullName /DEPENDENTS $exe.FullName }
+
+          Write-Host '=== Minimal Rust executable ==='
+          'fn main() { println!("minimal-ok"); }' | Set-Content -Path minimal.rs -Encoding ascii
+          rustc minimal.rs -o minimal-rust.exe
+          & .\minimal-rust.exe
+          Write-Host "minimal_exit_code=$LASTEXITCODE"
+
+          Write-Host '=== Project test executable ==='
+          & $exe.FullName --list
+          $code = $LASTEXITCODE
+          Write-Host "project_test_exit_code=$code"
+          exit $code
 
       - name: Run Rust clippy
         working-directory: src-tauri
