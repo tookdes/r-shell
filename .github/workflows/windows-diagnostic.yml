@@ -15,7 +15,7 @@ concurrency:
 jobs:
   diagnose:
     if: ${{ !contains(github.event.head_commit.message, '[windows-diagnostic]') }}
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - name: Checkout review branch
         uses: actions/checkout@v4
@@ -26,41 +26,16 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Restore Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: './src-tauri -> target'
-
-      - name: Test before and after package clean
-        timeout-minutes: 12
+      - name: Run Windows 2022 Rust tests
+        timeout-minutes: 15
         continue-on-error: true
         shell: pwsh
         run: |
-          $output = Join-Path $PWD 'windows-rust-test-output.txt'
-          "diagnostic started" | Out-File -FilePath $output -Encoding utf8
           Set-Location src-tauri
-
-          "`nBEFORE_CLEAN" | Out-File -FilePath $output -Append
-          cargo test --no-run *>&1 | Tee-Object -FilePath $output -Append
-          $beforeExe = Get-ChildItem 'target\debug\deps\r_shell_lib-*.exe' |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -First 1
-          if ($beforeExe) {
-            & $beforeExe.FullName --list *>&1 | Tee-Object -FilePath $output -Append
-            $beforeCode = $LASTEXITCODE
-          } else {
-            $beforeCode = -1
-          }
-
-          "`nCLEAN_PACKAGE" | Out-File -FilePath $output -Append
-          cargo clean -p r-shell *>&1 | Tee-Object -FilePath $output -Append
-
-          "`nAFTER_CLEAN" | Out-File -FilePath $output -Append
-          cargo test -- --nocapture --test-threads=1 *>&1 | Tee-Object -FilePath $output -Append
-          $afterCode = $LASTEXITCODE
-
+          cargo test *>&1 | Tee-Object -FilePath ../windows-rust-test-output.txt
+          $code = $LASTEXITCODE
           Set-Location ..
-          "before_exit_code=$beforeCode`nafter_exit_code=$afterCode" | Out-File -FilePath windows-rust-test-status.txt -Encoding utf8
+          "runner=windows-2022`nexit_code=$code" | Out-File -FilePath windows-rust-test-status.txt -Encoding utf8
           exit 0
 
       - name: Commit diagnostic output
@@ -71,7 +46,7 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add windows-rust-test-output.txt windows-rust-test-status.txt
           if (-not (git diff --cached --quiet)) {
-            git commit -m "chore: verify Windows clean rebuild [windows-diagnostic]"
+            git commit -m "chore: test Windows 2022 runner [windows-diagnostic]"
             git pull --rebase origin review/codex-workspace-sync
             git push origin HEAD:review/codex-workspace-sync
           }
