@@ -1,2 +1,2 @@
-before_exit_code=-1073741511
-after_exit_code=-1073741511
+runner=windows-2022
+exit_code=-1073741511
