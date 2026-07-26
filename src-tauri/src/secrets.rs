@@ -27,7 +27,7 @@ fn key_path() -> PathBuf {
 }
 
 fn random_fill(buf: &mut [u8]) -> Result<(), String> {
-    getrandom::getrandom(buf).map_err(|e| format!("rng failed: {e}"))
+    getrandom::fill(buf).map_err(|e| format!("rng failed: {e}"))
 }
 
 fn load_or_create_key() -> Result<[u8; KEY_LEN], String> {
