@@ -68,28 +68,8 @@ jobs:
         run: cargo test
 
       - name: Run Rust clippy
-        if: matrix.platform != 'macos-latest'
         working-directory: src-tauri
         run: cargo clippy -- -D warnings -A dead_code
-
-      - name: Capture macOS Rust clippy output
-        if: matrix.platform == 'macos-latest'
-        id: macos_clippy
-        continue-on-error: true
-        working-directory: src-tauri
-        shell: bash
-        run: cargo clippy --quiet --message-format short -- -D warnings -A dead_code 2>&1 | tee macos-clippy-output.txt
-
-      - name: Upload macOS Rust clippy output
-        if: matrix.platform == 'macos-latest' && always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-clippy-output
-          path: src-tauri/macos-clippy-output.txt
-
-      - name: Fail on macOS Rust clippy warnings
-        if: matrix.platform == 'macos-latest' && steps.macos_clippy.outcome == 'failure'
-        run: exit 1
 
       - name: Check Rust formatting
         working-directory: src-tauri
