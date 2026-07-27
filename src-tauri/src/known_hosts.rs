@@ -135,7 +135,6 @@ pub fn remember(host: &str, port: u16, key: &PublicKey) -> std::io::Result<()> {
 }
 
 /// Remove a stored key for `host:port`.
-#[allow(dead_code)]
 pub fn forget(host: &str, port: u16) -> std::io::Result<()> {
     let _guard = KNOWN_HOSTS_LOCK
         .lock()
@@ -164,31 +163,45 @@ pub fn forget(host: &str, port: u16) -> std::io::Result<()> {
 /// When `enabled` is false, every key is accepted (legacy behaviour).
 /// When enabled: Match accepts; Unknown accepts+remembers; Changed rejects.
 pub fn check_or_remember(host: &str, port: u16, key: &PublicKey, enabled: bool) -> bool {
+    // Sync path kept for tests / callers that cannot await.
+    // Unknown keys are auto-accepted (accept-new). Prefer `check_or_prompt`.
     if !enabled {
         return true;
     }
-
     match verify(host, port, key) {
         HostKeyStatus::Match => true,
         HostKeyStatus::Unknown => {
-            if let Err(error) = remember(host, port, key) {
-                tracing::warn!(
-                    "accepted new host key for {host}:{port} but failed to persist known_hosts: {error}"
-                );
-            } else {
-                tracing::info!(
-                    "trusted new host key for {host}:{port} ({})",
-                    fingerprint_label(key)
-                );
-            }
+            let _ = remember(host, port, key);
             true
         }
+        HostKeyStatus::Changed => false,
+    }
+}
+
+/// Interactive TOFU:
+/// Match -> accept; Unknown -> prompt and remember; Changed -> notify and reject.
+pub async fn check_or_prompt(host: &str, port: u16, key: &PublicKey, enabled: bool) -> bool {
+    if !enabled {
+        return true;
+    }
+    let algo = key.name().to_string();
+    let fp = fingerprint_label(key);
+    match verify(host, port, key) {
+        HostKeyStatus::Match => true,
+        HostKeyStatus::Unknown => {
+            let accepted = crate::host_key_prompt::prompt_user(host, port, &algo, &fp, false).await;
+            if accepted {
+                if let Err(e) = remember(host, port, key) {
+                    tracing::warn!("accepted host key but failed to persist known_hosts: {e}");
+                }
+            }
+            accepted
+        }
         HostKeyStatus::Changed => {
-            tracing::error!(
-                "HOST KEY CHANGED for {host}:{port} — presented {} (possible MITM). \
-                 Remove the entry from known_hosts to re-trust after verifying the server.",
-                fingerprint_label(key)
-            );
+            tracing::error!("HOST KEY CHANGED for {host}:{port} — presented {fp} (possible MITM)");
+            // Notify the user, but never accept or replace a changed key in-band.
+            // The stored entry must be explicitly removed before reconnecting.
+            let _ = crate::host_key_prompt::prompt_user(host, port, &algo, &fp, true).await;
             false
         }
     }

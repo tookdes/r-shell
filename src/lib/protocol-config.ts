@@ -10,6 +10,9 @@ export type Protocol = 'SSH' | 'Telnet' | 'Raw' | 'Serial' | 'SFTP' | 'FTP' | 'R
 /** Protocols with a working backend implementation in this release. */
 export const IMPLEMENTED_PROTOCOLS: Protocol[] = ['SSH', 'SFTP', 'FTP'];
 
+/** Protocols intentionally disabled in the product (stubs / not used). */
+export const DISABLED_PROTOCOLS: Protocol[] = ['RDP'];
+
 export type AuthMethod = 'password' | 'publickey' | 'keyboard-interactive' | 'anonymous';
 
 const DEFAULT_PORTS: Record<Protocol, number> = {
@@ -74,7 +77,15 @@ export function isDesktopProtocol(protocol: Protocol): boolean {
 }
 
 
+/** RDP is disabled product-wide until a real backend exists. */
+export function isRdpProtocol(protocol: string | undefined | null): boolean {
+  return (protocol ?? '').toUpperCase() === 'RDP';
+}
+
 /** Returns true when the protocol is fully implemented end-to-end. */
 export function isProtocolImplemented(protocol: Protocol): boolean {
+  if (isRdpProtocol(protocol)) {
+    return false;
+  }
   return IMPLEMENTED_PROTOCOLS.includes(protocol);
 }
