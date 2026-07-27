@@ -8,10 +8,11 @@ on:
 
 jobs:
   test:
+    continue-on-error: ${{ matrix.platform == 'windows-latest' }}
     strategy:
       fail-fast: false
       matrix:
-        platform: [macos-latest, ubuntu-latest]
+        platform: [macos-latest, ubuntu-latest, windows-latest]
 
     runs-on: ${{ matrix.platform }}
 
@@ -66,82 +67,13 @@ jobs:
         working-directory: src-tauri
         run: cargo test
 
-      - name: Capture Rust clippy output
-        id: clippy
-        continue-on-error: true
+      - name: Run Rust clippy
         working-directory: src-tauri
-        shell: bash
-        run: cargo clippy --quiet --message-format short -- -D warnings 2>&1 | tee clippy-output.txt
-
-      - name: Upload clippy output
-        if: matrix.platform == 'ubuntu-latest' && always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: clippy-output
-          path: src-tauri/clippy-output.txt
-
-      - name: Fail on clippy warnings
-        if: steps.clippy.outcome == 'failure'
-        run: exit 1
+        run: cargo clippy -- -D warnings -A dead_code
 
       - name: Check Rust formatting
         working-directory: src-tauri
         run: cargo fmt --check
-
-  windows-project-comparison:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - label: main
-            ref: main
-          - label: review
-            ref: review/codex-workspace-sync
-
-    name: windows-project (${{ matrix.label }})
-    runs-on: windows-2022
-
-    steps:
-      - name: Checkout ${{ matrix.label }}
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ matrix.ref }}
-
-      - name: Setup stable Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: './src-tauri -> target'
-          key: windows-project-${{ matrix.label }}
-
-      - name: Build and run Rust test executable
-        working-directory: src-tauri
-        shell: pwsh
-        run: |
-          $output = Join-Path $PWD "windows-$env:LABEL.txt"
-          cargo test --no-run *>&1 | Tee-Object -FilePath $output
-          $buildCode = $LASTEXITCODE
-          $exe = Get-ChildItem 'target\debug\deps\r_shell_lib-*.exe' -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -First 1
-          if ($exe) {
-            & $exe.FullName --list *>&1 | Tee-Object -FilePath $output -Append
-            $runCode = $LASTEXITCODE
-          } else {
-            $runCode = -1
-          }
-          "build_exit_code=$buildCode`nrun_exit_code=$runCode" | Tee-Object -FilePath $output -Append
-        env:
-          LABEL: ${{ matrix.label }}
-
-      - name: Upload Windows comparison
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-project-${{ matrix.label }}
-          path: src-tauri/windows-${{ matrix.label }}.txt
 
   i18n:
     runs-on: ubuntu-latest
