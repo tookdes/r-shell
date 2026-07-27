@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { applyLanguageFromPreference } from './lib/i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { HostKeyDialog } from './components/host-key-dialog';
 import { MenuBar } from './components/menu-bar';
 import { ConnectionManager } from './components/connection-manager';
 import { SystemMonitor } from './components/system-monitor';
@@ -14,9 +15,16 @@ import { IntegratedFileBrowser } from './components/integrated-file-browser';
 import { WelcomeScreen } from './components/welcome-screen';
 import { UpdateChecker } from './components/update-checker';
 import { ActiveConnectionsManager, ConnectionStorageManager } from './lib/connection-storage';
-import { isDesktopProtocol } from './lib/protocol-config';
+import { isDesktopProtocol, isRdpProtocol } from './lib/protocol-config';
 import { registerRestoration, clearAllRestorations } from './lib/restoration-manager';
+import {
+  connectionHasCredentials,
+  mergeWithSessionCredentials,
+  rememberSessionCredentials,
+} from './lib/connection-credentials';
+import { buildSshConnectRequest } from './lib/connection-invoke';
 import { buildTransportInvokeFields, loadConnectionTransportSettings } from './lib/connection-transport-settings';
+import { decryptConnectionSecrets } from './lib/secrets';
 import { useLayout, LayoutProvider } from './lib/layout-context';
 import {
   APP_SETTINGS_CHANGED_EVENT,
@@ -281,24 +289,24 @@ function AppContent() {
         }
         const activeConn = sortedConnections[i];
         const connectionIdToLoad = activeConn.originalConnectionId || activeConn.connectionId;
-        const connectionData = ConnectionStorageManager.getConnection(connectionIdToLoad);
+        const connectionDataRaw = ConnectionStorageManager.getConnection(connectionIdToLoad);
 
         setRestoringProgress({ current: i + 1, total: sortedConnections.length });
 
-        if (!connectionData) {
+        if (!connectionDataRaw) {
           console.warn(`Connection ${connectionIdToLoad} not found in storage`);
           failedCount++;
           continue;
         }
 
-        const isDesktopProto = connectionData.protocol === 'RDP' || connectionData.protocol === 'VNC';
-        const hasCredentials = isDesktopProto
-          ? true // Desktop protocols can connect with or without credentials
-          : connectionData.authMethod === 'password'
-            ? !!connectionData.password
-            : (connectionData.authMethod === 'anonymous' ? true : !!connectionData.privateKeyPath);
+        const connectionData = mergeWithSessionCredentials(
+          connectionIdToLoad,
+          await decryptConnectionSecrets(connectionDataRaw),
+        );
+        rememberSessionCredentials(connectionIdToLoad, connectionData);
 
-        if (!hasCredentials) {
+        const isDesktopProto = connectionData.protocol === 'RDP' || connectionData.protocol === 'VNC';
+        if (!isDesktopProto && !connectionHasCredentials(connectionData)) {
           console.log(`Connection ${connectionData.name} has no saved credentials, skipping restore`);
           failedCount++;
           continue;
@@ -318,8 +326,16 @@ function AppContent() {
           connectionData.protocol === 'RDP' || connectionData.protocol === 'VNC';
 
         try {
+          if (isRdpProtocol(connectionData.protocol)) {
+            console.warn(`Skipping RDP restore for ${connectionData.name}: RDP is disabled`);
+            if (tabAlreadyExists) {
+              dispatch({ type: 'UPDATE_TAB_STATUS', tabId: activeConn.connectionId, status: 'disconnected' });
+            }
+            failedCount++;
+            continue;
+          }
           if (isDesktopRestore) {
-            // RDP/VNC restoration
+            // VNC restoration (RDP disabled product-wide)
             const proto = connectionData.protocol;
             await withTimeout(
               invoke('desktop_connect', {
@@ -377,6 +393,13 @@ function AppContent() {
                     key_path: connectionData.privateKeyPath || null,
                     passphrase: connectionData.passphrase || null,
                     ...buildTransportInvokeFields(),
+                    key_data: connectionData.privateKeyData || null,
+                    proxy_type: connectionData.proxyType && connectionData.proxyType !== 'none' ? connectionData.proxyType : null,
+                    proxy_host: connectionData.proxyHost || null,
+                    proxy_port: connectionData.proxyPort || null,
+                    proxy_username: connectionData.proxyUsername || null,
+                    proxy_password: connectionData.proxyPassword || null,
+                    startup_command: connectionData.startupCommand || null,
                   }
                 }),
                 CONNECT_TIMEOUT_MS,
@@ -439,6 +462,13 @@ function AppContent() {
                     key_path: connectionData.privateKeyPath || null,
                     passphrase: connectionData.passphrase || null,
                     ...buildTransportInvokeFields(),
+                    key_data: connectionData.privateKeyData || null,
+                    proxy_type: connectionData.proxyType && connectionData.proxyType !== 'none' ? connectionData.proxyType : null,
+                    proxy_host: connectionData.proxyHost || null,
+                    proxy_port: connectionData.proxyPort || null,
+                    proxy_username: connectionData.proxyUsername || null,
+                    proxy_password: connectionData.proxyPassword || null,
+                    startup_command: connectionData.startupCommand || null,
                   }
                 }
               ),
@@ -538,22 +568,26 @@ function AppContent() {
         tab => tab.id === connection.id || tab.originalConnectionId === connection.id
       );
 
-      const connectionData = ConnectionStorageManager.getConnection(connection.id);
-      if (!connectionData) return;
+      const connectionDataRaw = ConnectionStorageManager.getConnection(connection.id);
+      if (!connectionDataRaw) return;
+      const connectionData = mergeWithSessionCredentials(
+        connection.id,
+        await decryptConnectionSecrets(connectionDataRaw),
+      );
+      rememberSessionCredentials(connection.id, connectionData);
+
+      if (isRdpProtocol(connectionData.protocol)) {
+        toast.error(t('app.rdpDisabled'), {
+          description: t('app.rdpDisabledDesc'),
+        });
+        return;
+      }
 
       const isSftp = connectionData.protocol === 'SFTP';
       const isFtp = connectionData.protocol === 'FTP';
       const isFileBrowser = isSftp || isFtp;
 
-      const hasCredentials = isFileBrowser
-        ? (connectionData.authMethod === 'anonymous' || connectionData.authMethod === 'password'
-          ? (connectionData.authMethod === 'anonymous' || !!connectionData.password)
-          : !!connectionData.privateKeyPath)
-        : (connectionData.authMethod === 'password'
-          ? !!connectionData.password
-          : !!connectionData.privateKeyPath);
-
-      if (!hasCredentials) {
+      if (!connectionHasCredentials(connectionData)) {
         setEditingConnection({
           id: connection.id,
           name: connectionData.name,
@@ -600,6 +634,13 @@ function AppContent() {
                 key_path: connectionData.privateKeyPath || null,
                 passphrase: connectionData.passphrase || null,
                     ...buildTransportInvokeFields(),
+                    key_data: connectionData.privateKeyData || null,
+                    proxy_type: connectionData.proxyType && connectionData.proxyType !== 'none' ? connectionData.proxyType : null,
+                    proxy_host: connectionData.proxyHost || null,
+                    proxy_port: connectionData.proxyPort || null,
+                    proxy_username: connectionData.proxyUsername || null,
+                    proxy_password: connectionData.proxyPassword || null,
+                    startup_command: connectionData.startupCommand || null,
               }
             });
           } else {
@@ -639,6 +680,13 @@ function AppContent() {
                 key_path: connectionData.privateKeyPath || null,
                 passphrase: connectionData.passphrase || null,
                     ...buildTransportInvokeFields(),
+                    key_data: connectionData.privateKeyData || null,
+                    proxy_type: connectionData.proxyType && connectionData.proxyType !== 'none' ? connectionData.proxyType : null,
+                    proxy_host: connectionData.proxyHost || null,
+                    proxy_port: connectionData.proxyPort || null,
+                    proxy_username: connectionData.proxyUsername || null,
+                    proxy_password: connectionData.proxyPassword || null,
+                    startup_command: connectionData.startupCommand || null,
               }
             }
           );
@@ -714,7 +762,8 @@ function AppContent() {
       try {
         if (tab.tabType === 'file-browser') {
           if (tab.protocol === 'SFTP') {
-            await invoke('sftp_standalone_disconnect', { connection_id: tabId });
+            try { await invoke('abort_connection_transfers', { connectionId: tabId }); } catch { /* ignore */ }
+          await invoke('sftp_standalone_disconnect', { connection_id: tabId });
           } else if (tab.protocol === 'FTP') {
             await invoke('ftp_disconnect', { connection_id: tabId });
           }
@@ -756,30 +805,41 @@ function AppContent() {
     if (!tabToDuplicate) return;
 
     const originalConnectionId = tabToDuplicate.originalConnectionId || tabId;
-    const connectionData = ConnectionStorageManager.getConnection(originalConnectionId);
-    if (!connectionData) {
+    const connectionDataRaw = ConnectionStorageManager.getConnection(originalConnectionId);
+    if (!connectionDataRaw) {
       toast.error(t('app.cannotDuplicate'), {
         description: t('app.cannotDuplicateDesc'),
       });
       return;
     }
 
+    const connectionData = mergeWithSessionCredentials(
+      originalConnectionId,
+      await decryptConnectionSecrets(connectionDataRaw),
+    );
+
     const isSftp = tabToDuplicate.protocol === 'SFTP' || connectionData.protocol === 'SFTP';
     const isFtp = tabToDuplicate.protocol === 'FTP' || connectionData.protocol === 'FTP';
     const isFileBrowser = isSftp || isFtp;
 
-    const hasCredentials = isFileBrowser
-      ? (connectionData.authMethod === 'anonymous' || !!connectionData.password || !!connectionData.privateKeyPath)
-      : (connectionData.authMethod === 'password'
-        ? !!connectionData.password
-        : !!connectionData.privateKeyPath);
-
-    if (!hasCredentials) {
+    if (!connectionHasCredentials(connectionData)) {
       toast.error(t('app.cannotDuplicate'), {
         description: t('app.noCredentialsDesc'),
       });
+      setEditingConnection({
+        id: originalConnectionId,
+        name: connectionData.name,
+        protocol: connectionData.protocol as ConnectionConfig['protocol'],
+        host: connectionData.host,
+        port: connectionData.port,
+        username: connectionData.username,
+        authMethod: connectionData.authMethod || 'password',
+      });
+      setConnectionDialogOpen(true);
       return;
     }
+
+    rememberSessionCredentials(originalConnectionId, connectionData);
 
     try {
       const duplicateId = `${originalConnectionId}-dup-${Date.now()}`;
@@ -802,17 +862,7 @@ function AppContent() {
         try {
           if (isSftp) {
             await invoke('sftp_connect', {
-              request: {
-                connection_id: duplicateId,
-                host: connectionData.host,
-                port: connectionData.port || 22,
-                username: connectionData.username,
-                auth_method: connectionData.authMethod || 'password',
-                password: connectionData.password || '',
-                key_path: connectionData.privateKeyPath || null,
-                passphrase: connectionData.passphrase || null,
-                    ...buildTransportInvokeFields(),
-              }
+              request: await buildSshConnectRequest(duplicateId, connectionData, originalConnectionId),
             });
           } else {
             await invoke('ftp_connect', {
@@ -842,17 +892,7 @@ function AppContent() {
         const result = await invoke<{ success: boolean; error?: string }>(
           'ssh_connect',
           {
-            request: {
-              connection_id: duplicateId,
-              host: connectionData.host,
-              port: connectionData.port || 22,
-              username: connectionData.username,
-              auth_method: connectionData.authMethod || 'password',
-              password: connectionData.password || '',
-              key_path: connectionData.privateKeyPath || null,
-              passphrase: connectionData.passphrase || null,
-                    ...buildTransportInvokeFields(),
-            }
+            request: await buildSshConnectRequest(duplicateId, connectionData, originalConnectionId),
           }
         );
 
@@ -892,25 +932,23 @@ function AppContent() {
     if (!tabToReconnect) return;
 
     const originalConnectionId = tabToReconnect.originalConnectionId || tabId;
-    const connectionData = ConnectionStorageManager.getConnection(originalConnectionId);
-    if (!connectionData) {
+    const connectionDataRaw = ConnectionStorageManager.getConnection(originalConnectionId);
+    if (!connectionDataRaw) {
       toast.error(t('app.cannotReconnect'), {
         description: t('app.cannotReconnectDesc'),
       });
       return;
     }
+    const connectionData = mergeWithSessionCredentials(
+      originalConnectionId,
+      await decryptConnectionSecrets(connectionDataRaw),
+    );
 
     const isSftp = tabToReconnect.protocol === 'SFTP' || connectionData.protocol === 'SFTP';
     const isFtp = tabToReconnect.protocol === 'FTP' || connectionData.protocol === 'FTP';
     const isFileBrowser = isSftp || isFtp;
 
-    const hasCredentials = isFileBrowser
-      ? (connectionData.authMethod === 'anonymous' || !!connectionData.password || !!connectionData.privateKeyPath)
-      : (connectionData.authMethod === 'password'
-        ? !!connectionData.password
-        : !!connectionData.privateKeyPath);
-
-    if (!hasCredentials) {
+    if (!connectionHasCredentials(connectionData)) {
       toast.error(t('app.cannotReconnect'), {
         description: t('app.noCredentialsDesc'),
       });
@@ -927,6 +965,8 @@ function AppContent() {
       return;
     }
 
+    rememberSessionCredentials(originalConnectionId, connectionData);
+
     // Update tab status to connecting
     dispatch({ type: 'UPDATE_TAB_STATUS', tabId, status: 'connecting' });
 
@@ -935,7 +975,8 @@ function AppContent() {
         // SFTP/FTP reconnect
         try {
           if (isSftp) {
-            await invoke('sftp_standalone_disconnect', { connection_id: tabId });
+            try { await invoke('abort_connection_transfers', { connectionId: tabId }); } catch { /* ignore */ }
+          await invoke('sftp_standalone_disconnect', { connection_id: tabId });
           } else {
             await invoke('ftp_disconnect', { connection_id: tabId });
           }
@@ -955,6 +996,13 @@ function AppContent() {
               key_path: connectionData.privateKeyPath || null,
               passphrase: connectionData.passphrase || null,
                     ...buildTransportInvokeFields(),
+                    key_data: connectionData.privateKeyData || null,
+                    proxy_type: connectionData.proxyType && connectionData.proxyType !== 'none' ? connectionData.proxyType : null,
+                    proxy_host: connectionData.proxyHost || null,
+                    proxy_port: connectionData.proxyPort || null,
+                    proxy_username: connectionData.proxyUsername || null,
+                    proxy_password: connectionData.proxyPassword || null,
+                    startup_command: connectionData.startupCommand || null,
             }
           });
         } else {
@@ -999,6 +1047,13 @@ function AppContent() {
               key_path: connectionData.privateKeyPath || null,
               passphrase: connectionData.passphrase || null,
                     ...buildTransportInvokeFields(),
+                    key_data: connectionData.privateKeyData || null,
+                    proxy_type: connectionData.proxyType && connectionData.proxyType !== 'none' ? connectionData.proxyType : null,
+                    proxy_host: connectionData.proxyHost || null,
+                    proxy_port: connectionData.proxyPort || null,
+                    proxy_username: connectionData.proxyUsername || null,
+                    proxy_password: connectionData.proxyPassword || null,
+                    startup_command: connectionData.startupCommand || null,
             }
           }
         );
@@ -1098,7 +1153,21 @@ function AppContent() {
   }, [activeConnection, t]);
 
   const handleConnectionDialogConnect = useCallback(async (config: ConnectionConfig) => {
+    if (isRdpProtocol(config.protocol)) {
+      toast.error(t('app.rdpDisabled'), {
+        description: t('app.rdpDisabledDesc'),
+      });
+      return;
+    }
+
     const tabId = config.id || `connection-${Date.now()}`;
+    // Keep plaintext credentials in memory so Duplicate Tab works when
+    // "Save Passwords" is off (secrets are stripped from localStorage).
+    rememberSessionCredentials(tabId, config);
+    if (config.id) {
+      rememberSessionCredentials(config.id, config);
+    }
+
     const isSftp = config.protocol === 'SFTP';
     const isFtp = config.protocol === 'FTP';
     const isFileBrowser = isSftp || isFtp;
@@ -1131,8 +1200,15 @@ function AppContent() {
                 auth_method: config.authMethod || 'password',
                 password: config.password || '',
                 key_path: config.privateKeyPath || null,
+                key_data: config.privateKeyData || null,
                 passphrase: config.passphrase || null,
-                    ...buildTransportInvokeFields(),
+                ...buildTransportInvokeFields(),
+                proxy_type: config.proxyType && config.proxyType !== 'none' ? config.proxyType : null,
+                proxy_host: config.proxyHost || null,
+                proxy_port: config.proxyPort || null,
+                proxy_username: config.proxyUsername || null,
+                proxy_password: config.proxyPassword || null,
+                startup_command: config.startupCommand || null,
               }
             });
           } else {
@@ -1241,8 +1317,15 @@ function AppContent() {
                 auth_method: config.authMethod || 'password',
                 password: config.password || '',
                 key_path: config.privateKeyPath || null,
+                key_data: config.privateKeyData || null,
                 passphrase: config.passphrase || null,
-                    ...buildTransportInvokeFields(),
+                ...buildTransportInvokeFields(),
+                proxy_type: config.proxyType && config.proxyType !== 'none' ? config.proxyType : null,
+                proxy_host: config.proxyHost || null,
+                proxy_port: config.proxyPort || null,
+                proxy_username: config.proxyUsername || null,
+                proxy_password: config.proxyPassword || null,
+                startup_command: config.startupCommand || null,
               }
             });
           } else {
@@ -1339,31 +1422,51 @@ function AppContent() {
     return () => { unlistenPromise.then(fn => fn()); };
   }, [activeGroup, activeTab, handleNewTab, handleOpenSettings, handleDuplicateTab, dispatch]);
 
-  const handleEditConnection = useCallback((connection: ConnectionNode) => {
-    if (connection.type === 'connection') {
-      const connectionData = ConnectionStorageManager.getConnection(connection.id);
-      if (connectionData) {
-        setEditingConnection({
-          id: connectionData.id,
-          name: connectionData.name,
-          protocol: connectionData.protocol as ConnectionConfig['protocol'],
-          host: connectionData.host,
-          port: connectionData.port,
-          username: connectionData.username,
-          authMethod: connectionData.authMethod || 'password',
-          password: connectionData.password,
-          privateKeyPath: connectionData.privateKeyPath,
-          passphrase: connectionData.passphrase,
-          domain: connectionData.domain,
-          rdpResolution: connectionData.rdpResolution as ConnectionConfig['rdpResolution'],
-          vncColorDepth: connectionData.vncColorDepth as ConnectionConfig['vncColorDepth'],
-        });
-        setConnectionDialogOpen(true);
-      } else {
-        toast.error('Connection Not Found', {
-          description: 'The connection data could not be loaded.',
-        });
-      }
+  const handleEditConnection = useCallback(async (connection: ConnectionNode) => {
+    if (connection.type !== 'connection') return;
+
+    const connectionDataRaw = ConnectionStorageManager.getConnection(connection.id);
+    if (!connectionDataRaw) {
+      toast.error('Connection Not Found', {
+        description: 'The connection data could not be loaded.',
+      });
+      return;
+    }
+
+    try {
+      const connectionData = mergeWithSessionCredentials(
+        connection.id,
+        await decryptConnectionSecrets(connectionDataRaw),
+      );
+      rememberSessionCredentials(connection.id, connectionData);
+      setEditingConnection({
+        id: connectionData.id,
+        name: connectionData.name,
+        protocol: connectionData.protocol as ConnectionConfig['protocol'],
+        host: connectionData.host,
+        port: connectionData.port,
+        username: connectionData.username,
+        authMethod: connectionData.authMethod || 'password',
+        password: connectionData.password,
+        privateKeyPath: connectionData.privateKeyPath,
+        privateKeyData: connectionData.privateKeyData,
+        passphrase: connectionData.passphrase,
+        startupCommand: connectionData.startupCommand,
+        proxyType: connectionData.proxyType,
+        proxyHost: connectionData.proxyHost,
+        proxyPort: connectionData.proxyPort,
+        proxyUsername: connectionData.proxyUsername,
+        proxyPassword: connectionData.proxyPassword,
+        ftpsEnabled: connectionData.ftpsEnabled,
+        domain: connectionData.domain,
+        rdpResolution: connectionData.rdpResolution as ConnectionConfig['rdpResolution'],
+        vncColorDepth: connectionData.vncColorDepth as ConnectionConfig['vncColorDepth'],
+      });
+      setConnectionDialogOpen(true);
+    } catch (error) {
+      toast.error('Unable to decrypt connection credentials', {
+        description: error instanceof Error ? error.message : String(error),
+      });
     }
   }, []);
 
@@ -1390,25 +1493,24 @@ function AppContent() {
       return;
     }
 
-    const connectionData = ConnectionStorageManager.getConnection(connectionId);
-    if (!connectionData) {
+    const connectionDataRaw = ConnectionStorageManager.getConnection(connectionId);
+    if (!connectionDataRaw) {
       toast.error('Connection Not Found', {
         description: 'The connection could not be found. It may have been deleted.',
       });
       return;
     }
 
+    const connectionData = mergeWithSessionCredentials(
+      connectionId,
+      await decryptConnectionSecrets(connectionDataRaw),
+    );
+
     const isSftp = connectionData.protocol === 'SFTP';
     const isFtp = connectionData.protocol === 'FTP';
     const isFileBrowser = isSftp || isFtp;
 
-    const hasCredentials = isFileBrowser
-      ? (connectionData.authMethod === 'anonymous' || !!connectionData.password || !!connectionData.privateKeyPath)
-      : (connectionData.authMethod === 'password'
-        ? !!connectionData.password
-        : !!connectionData.privateKeyPath);
-
-    if (!hasCredentials) {
+    if (!connectionHasCredentials(connectionData)) {
       setEditingConnection({
         id: connectionData.id,
         name: connectionData.name,
@@ -1421,6 +1523,8 @@ function AppContent() {
       setConnectionDialogOpen(true);
       return;
     }
+
+    rememberSessionCredentials(connectionId, connectionData);
 
     if (isFileBrowser) {
       // Route through handleConnectionDialogConnect which handles SFTP/FTP
@@ -1457,6 +1561,13 @@ function AppContent() {
               key_path: connectionData.privateKeyPath || null,
               passphrase: connectionData.passphrase || null,
                     ...buildTransportInvokeFields(),
+                    key_data: connectionData.privateKeyData || null,
+                    proxy_type: connectionData.proxyType && connectionData.proxyType !== 'none' ? connectionData.proxyType : null,
+                    proxy_host: connectionData.proxyHost || null,
+                    proxy_port: connectionData.proxyPort || null,
+                    proxy_username: connectionData.proxyUsername || null,
+                    proxy_password: connectionData.proxyPassword || null,
+                    startup_command: connectionData.startupCommand || null,
             }
           }
         );
@@ -1541,6 +1652,7 @@ function AppContent() {
 
   return (
     <div className="h-screen flex flex-col bg-background">
+      <HostKeyDialog />
       <UpdateChecker checkSignal={updateCheckSignal} />
       {/* Connection Restoration Loading Overlay */}
       {isRestoring && (

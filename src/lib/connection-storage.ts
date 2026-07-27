@@ -24,6 +24,8 @@ export interface ConnectionData {
   authMethod?: 'password' | 'publickey' | 'keyboard-interactive' | 'anonymous';
   password?: string; // Note: In production, this should be encrypted
   privateKeyPath?: string;
+  /** Inline PEM private key (encrypted at rest when savePasswords is on). */
+  privateKeyData?: string;
   passphrase?: string;
   // FTP-specific
   ftpsEnabled?: boolean;
@@ -33,6 +35,13 @@ export interface ConnectionData {
   // VNC-specific
   vncColorDepth?: string;
   vncPassword?: string;
+  proxyType?: 'none' | 'http' | 'socks4' | 'socks5';
+  proxyHost?: string;
+  proxyPort?: number;
+  proxyUsername?: string;
+  proxyPassword?: string;
+  /** Commands run after SSH PTY is ready (newline-separated). */
+  startupCommand?: string;
 }
 
 export interface ConnectionFolder {
@@ -49,18 +58,22 @@ export interface ConnectionFolder {
 function shouldPersistPasswords(): boolean {
   try {
     const raw = localStorage.getItem('sshClientSettings');
-    if (!raw) return true;
+    if (!raw) return false;
     const parsed = JSON.parse(raw) as { savePasswords?: unknown };
-    // Default true for backward compatibility when key is absent; explicit false strips secrets.
-    return parsed.savePasswords !== false;
+    // Secrets are persisted only after the user explicitly enables the setting.
+    return parsed.savePasswords === true;
   } catch {
-    return true;
+    return false;
   }
 }
 
-function maybeStripSecrets<T extends { password?: string; passphrase?: string; vncPassword?: string }>(
-  connection: T,
-): T {
+function maybeStripSecrets<T extends {
+  password?: string;
+  passphrase?: string;
+  vncPassword?: string;
+  privateKeyData?: string;
+  proxyPassword?: string;
+}>(connection: T): T {
   if (shouldPersistPasswords()) {
     return connection;
   }
@@ -69,6 +82,8 @@ function maybeStripSecrets<T extends { password?: string; passphrase?: string; v
     password: undefined,
     passphrase: undefined,
     vncPassword: undefined,
+    privateKeyData: undefined,
+    proxyPassword: undefined,
   };
 }
 
@@ -187,6 +202,19 @@ export class ConnectionStorageManager {
   static getConnection(id: string): ConnectionData | undefined {
     const connections = this.getConnections();
     return connections.find(c => c.id === id);
+  }
+
+  /** Remove all persisted authentication material from existing connections. */
+  static stripStoredSecrets(): void {
+    const connections = this.getConnections().map((connection) => ({
+      ...connection,
+      password: undefined,
+      passphrase: undefined,
+      vncPassword: undefined,
+      privateKeyData: undefined,
+      proxyPassword: undefined,
+    }));
+    localStorage.setItem(CONNECTIONS_STORAGE_KEY, JSON.stringify(connections));
   }
 
   /**

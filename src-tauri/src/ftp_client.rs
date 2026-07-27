@@ -1,5 +1,5 @@
 use anyhow::Result;
-use async_std::io::ReadExt;
+use async_std::io::{ReadExt, WriteExt};
 use serde::Deserialize;
 use std::time::Duration;
 
@@ -77,8 +77,7 @@ impl FtpClient {
 
             tracing::info!("FTPS TCP connected, starting TLS handshake...");
 
-            let tls_connector =
-                suppaftp::async_native_tls::TlsConnector::new().danger_accept_invalid_certs(true);
+            let tls_connector = suppaftp::async_native_tls::TlsConnector::new();
             let secure_stream = ftp_stream
                 .into_secure(
                     suppaftp::AsyncNativeTlsConnector::from(tls_connector),
@@ -195,35 +194,41 @@ impl FtpClient {
 
     /// Download a remote file to a local path. Returns bytes downloaded.
     pub async fn download_file(&mut self, remote_path: &str, local_path: &str) -> Result<u64> {
-        let data: Vec<u8> = ftp_stream!(self, s => {
-            let mut data_stream = s.retr_as_stream(remote_path).await.map_err(|e| {
+        let mut local_file = async_std::fs::File::create(local_path).await?;
+        let total_bytes: u64 = ftp_stream!(self, stream => {
+            let mut data_stream = stream.retr_as_stream(remote_path).await.map_err(|e| {
                 anyhow::anyhow!("Failed to download file '{}': {}", remote_path, e)
             })?;
-            let mut buf = Vec::new();
-            data_stream.read_to_end(&mut buf).await.map_err(|e| {
-                anyhow::anyhow!("Failed to read download stream: {}", e)
-            })?;
-            s.finalize_retr_stream(data_stream).await.map_err(|e| {
+            let mut buffer = vec![0u8; 32768];
+            let mut transferred = 0u64;
+            loop {
+                let count = data_stream.read(&mut buffer).await.map_err(|e| {
+                    anyhow::anyhow!("Failed to read download stream: {}", e)
+                })?;
+                if count == 0 {
+                    break;
+                }
+                local_file.write_all(&buffer[..count]).await?;
+                transferred += count as u64;
+            }
+            local_file.flush().await?;
+            stream.finalize_retr_stream(data_stream).await.map_err(|e| {
                 anyhow::anyhow!("Failed to finalize download: {}", e)
             })?;
-            buf
+            transferred
         });
-
-        let total_bytes = data.len() as u64;
-        tokio::fs::write(local_path, data).await?;
         Ok(total_bytes)
     }
 
     /// Upload a local file to a remote path. Returns bytes uploaded.
     pub async fn upload_file(&mut self, local_path: &str, remote_path: &str) -> Result<u64> {
-        let data = tokio::fs::read(local_path)
+        let mut local_file = async_std::fs::File::open(local_path)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to read local file '{}': {}", local_path, e))?;
-        let total_bytes = data.len() as u64;
+        let total_bytes = local_file.metadata().await?.len();
 
-        ftp_stream!(self, s => {
-            let mut reader = async_std::io::Cursor::new(data);
-            s.put_file(remote_path, &mut reader).await.map_err(|e| {
+        ftp_stream!(self, stream => {
+            stream.put_file(remote_path, &mut local_file).await.map_err(|e| {
                 anyhow::anyhow!("Failed to upload file '{}': {}", remote_path, e)
             })?
         });
@@ -344,9 +349,18 @@ fn parse_ftp_list_line(line: &str) -> Option<FileEntry> {
 /// Parse FTP `ls` date fields ("Mon DD HH:MM" or "Mon DD YYYY") into "yyyy-mm-dd hh:mm:ss".
 fn parse_ftp_modified(month_str: &str, day_str: &str, time_or_year: &str) -> Option<String> {
     let month_num = match month_str {
-        "Jan" => 1u32, "Feb" => 2, "Mar" => 3, "Apr" => 4,
-        "May" => 5, "Jun" => 6, "Jul" => 7, "Aug" => 8,
-        "Sep" => 9, "Oct" => 10, "Nov" => 11, "Dec" => 12,
+        "Jan" => 1u32,
+        "Feb" => 2,
+        "Mar" => 3,
+        "Apr" => 4,
+        "May" => 5,
+        "Jun" => 6,
+        "Jul" => 7,
+        "Aug" => 8,
+        "Sep" => 9,
+        "Oct" => 10,
+        "Nov" => 11,
+        "Dec" => 12,
         _ => return None,
     };
     let day: u32 = day_str.parse().unwrap_or(1);
@@ -366,13 +380,18 @@ fn parse_ftp_modified(month_str: &str, day_str: &str, time_or_year: &str) -> Opt
             let mut rem = days as i64;
             loop {
                 let dy = if is_leap_year(y) { 366 } else { 365 };
-                if rem < dy { break; }
+                if rem < dy {
+                    break;
+                }
                 rem -= dy;
                 y += 1;
             }
             y as u32
         };
-        Some(format!("{:04}-{:02}-{:02} {:02}:{:02}:00", current_year, month_num, day, hh, mm))
+        Some(format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:00",
+            current_year, month_num, day, hh, mm
+        ))
     } else {
         // Older file: "YYYY" — time is 00:00:00
         let year: u32 = time_or_year.parse().unwrap_or(1970);

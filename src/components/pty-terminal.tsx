@@ -15,6 +15,7 @@ import { toast } from 'sonner';
 import { signalReady } from '../lib/restoration-manager';
 import { useTerminalCallbacks } from '../lib/terminal-callbacks-context';
 import { loadConnectionTransportSettings } from '../lib/connection-transport-settings';
+import { normalizePtyInput } from '../lib/pty-input';
 import i18n from '../lib/i18n';
 import '@xterm/xterm/css/xterm.css';
 
@@ -116,7 +117,12 @@ export function PtyTerminal({
       return false;
     }
 
-    const dataBytes = Array.from(inputEncoderRef.current.encode(data));
+    // PTY shells expect CR as the line terminator. Never forward CRLF:
+    // after a trailing `\`, bash line-continuation is "backslash + single
+    // newline". Sending `\r\n` becomes two line ends (continue, then empty
+    // submit), so `ls \` + Enter + `-a` runs as two commands (#37).
+    const normalizedInput = normalizePtyInput(data);
+    const dataBytes = Array.from(inputEncoderRef.current.encode(normalizedInput));
     ws.send(JSON.stringify({
       type: 'Input',
       connection_id: connectionId,
@@ -142,17 +148,6 @@ export function PtyTerminal({
     }
   }, []);
 
-
-  // Menu bar / global shortcut: clear the active terminal viewport.
-  React.useEffect(() => {
-    if (!isActive) return;
-    const handleClearEvent = () => {
-      xtermRef.current?.clear();
-      setHasScrollableContent(false);
-    };
-    window.addEventListener('r-shell:clear-active-terminal', handleClearEvent);
-    return () => window.removeEventListener('r-shell:clear-active-terminal', handleClearEvent);
-  }, [isActive]);
 
   // Get appearance settings - reloads when appearanceKey changes
   const appearance = React.useMemo(() => loadAppearanceSettings(), [appearanceKey]);
@@ -964,6 +959,60 @@ export function PtyTerminal({
   const handleSelectAll = React.useCallback(() => {
     xtermRef.current?.selectAll();
   }, []);
+
+  // Menu bar Edit actions: only the active terminal responds.
+  React.useEffect(() => {
+    if (!isActive) return;
+
+    const onClear = () => {
+      xtermRef.current?.clear();
+      setHasScrollableContent(false);
+    };
+    const onPaste = () => {
+      void pasteClipboardIntoPty();
+    };
+    const onCopy = () => {
+      handleCopy();
+    };
+    const onSelectAll = () => {
+      handleSelectAll();
+    };
+    const onFind = () => {
+      handleSearch();
+    };
+    const onFindNext = () => {
+      handleFindNext();
+    };
+    const onFindPrevious = () => {
+      handleFindPrevious();
+    };
+
+    window.addEventListener('r-shell:clear-active-terminal', onClear);
+    window.addEventListener('r-shell:paste-active-terminal', onPaste);
+    window.addEventListener('r-shell:copy-active-terminal', onCopy);
+    window.addEventListener('r-shell:select-all-active-terminal', onSelectAll);
+    window.addEventListener('r-shell:find-active-terminal', onFind);
+    window.addEventListener('r-shell:find-next-active-terminal', onFindNext);
+    window.addEventListener('r-shell:find-previous-active-terminal', onFindPrevious);
+
+    return () => {
+      window.removeEventListener('r-shell:clear-active-terminal', onClear);
+      window.removeEventListener('r-shell:paste-active-terminal', onPaste);
+      window.removeEventListener('r-shell:copy-active-terminal', onCopy);
+      window.removeEventListener('r-shell:select-all-active-terminal', onSelectAll);
+      window.removeEventListener('r-shell:find-active-terminal', onFind);
+      window.removeEventListener('r-shell:find-next-active-terminal', onFindNext);
+      window.removeEventListener('r-shell:find-previous-active-terminal', onFindPrevious);
+    };
+  }, [
+    isActive,
+    pasteClipboardIntoPty,
+    handleCopy,
+    handleSelectAll,
+    handleSearch,
+    handleFindNext,
+    handleFindPrevious,
+  ]);
 
   const handleReconnect = React.useCallback(() => {
     if (onReconnectTab) {

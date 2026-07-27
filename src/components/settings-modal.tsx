@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { changeLanguage, getLanguagePreference, AUTO } from '@/lib/i18n';
@@ -61,6 +62,7 @@ import {
 import { normalizeUpdateProxy } from '@/lib/update-proxy';
 import { Checkbox } from './ui/checkbox';
 import { useLayout } from '@/lib/layout-context';
+import { ConnectionStorageManager } from '@/lib/connection-storage';
 
 interface SettingsModalProps {
   open: boolean;
@@ -72,6 +74,8 @@ interface SettingsModalProps {
 export function SettingsModal({ open, onOpenChange, onAppearanceChange, onCheckForUpdates }: SettingsModalProps) {
   const { t } = useTranslation();
   const { layout } = useLayout();
+  const [knownHostsHost, setKnownHostsHost] = useState('');
+  const [knownHostsPort, setKnownHostsPort] = useState(22);
   const [languagePref, setLanguagePref] = useState<string>(() => getLanguagePreference());
   const [terminalAppearance, setTerminalAppearance] = useState<TerminalAppearanceSettings>(defaultAppearanceSettings);
   const [editorConfig, setEditorConfig] = useState<EditorConfig>(DEFAULT_EDITOR_CONFIG);
@@ -245,6 +249,9 @@ export function SettingsModal({ open, onOpenChange, onAppearanceChange, onCheckF
       ...settings,
       updateProxy: updateProxy ?? '',
     }));
+    if (!settings.savePasswords) {
+      ConnectionStorageManager.stripStoredSecrets();
+    }
     window.dispatchEvent(new Event(APP_SETTINGS_CHANGED_EVENT));
     onOpenChange(false);
     return true;
@@ -960,6 +967,50 @@ export function SettingsModal({ open, onOpenChange, onAppearanceChange, onCheckF
                     checked={settings.hostKeyVerification}
                     onCheckedChange={(checked) => updateSetting('hostKeyVerification', checked)}
                   />
+                </div>
+
+                <div className="space-y-2 rounded-md border p-3">
+                  <Label>{t('settings.security.clearKnownHosts')}</Label>
+                  <p className="text-sm text-muted-foreground">{t('settings.security.clearKnownHostsDesc')}</p>
+                  <div className="flex flex-wrap items-end gap-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs">{t('settings.security.clearKnownHostsHost')}</Label>
+                      <Input
+                        value={knownHostsHost}
+                        onChange={(e) => setKnownHostsHost(e.target.value)}
+                        placeholder="example.com"
+                        className="h-8 w-48"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">{t('settings.security.clearKnownHostsPort')}</Label>
+                      <Input
+                        type="number"
+                        value={knownHostsPort}
+                        onChange={(e) => setKnownHostsPort(Number(e.target.value) || 22)}
+                        className="h-8 w-24"
+                      />
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={async () => {
+                        if (!knownHostsHost.trim()) return;
+                        try {
+                          await invoke('known_hosts_forget', {
+                            host: knownHostsHost.trim(),
+                            port: knownHostsPort || 22,
+                          });
+                          toast.success(t('settings.security.clearKnownHostsSuccess'));
+                        } catch (error) {
+                          toast.error(String(error));
+                        }
+                      }}
+                    >
+                      {t('settings.security.clearKnownHostsButton')}
+                    </Button>
+                  </div>
                 </div>
 
                 <Separator />
