@@ -14,6 +14,10 @@ dist-ssr
 target
 .qoder
 
+# Locally packaged release binaries
+release/**/*.exe
+release/**/*.msi
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

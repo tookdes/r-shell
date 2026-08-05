@@ -340,7 +340,6 @@ impl StandaloneSftpClient {
         let mut remote_file = sftp.create(remote_path).await.map_err(|e| {
             anyhow::anyhow!("Failed to create remote file '{}': {}", remote_path, e)
         })?;
-
         let mut buf = vec![0u8; 32768];
         let mut sent = 0u64;
 
@@ -622,10 +621,12 @@ mod tests {
         match config.auth_method {
             SftpAuthMethod::PublicKey {
                 key_path,
+                key_data,
                 passphrase,
                 ..
             } => {
                 assert_eq!(key_path.as_deref(), Some("/home/user/.ssh/id_rsa"));
+                assert!(key_data.is_none());
                 assert!(passphrase.is_none());
             }
             _ => panic!("Expected PublicKey auth method"),

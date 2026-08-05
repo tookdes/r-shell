@@ -257,6 +257,13 @@ export function ConnectionDialog({
 
     if (isSftpOrFtp || isDesktop) {
       try {
+        const secretsForStorage = await encryptConnectionSecrets({
+          password: config.password,
+          passphrase: config.passphrase,
+          privateKeyData: config.privateKeyData,
+          proxyPassword: config.proxyPassword,
+        });
+
         // Save connection if requested
         if (editingConnection?.id) {
           ConnectionStorageManager.updateConnection(editingConnection.id, {
@@ -266,9 +273,16 @@ export function ConnectionDialog({
             username: config.username,
             protocol: config.protocol,
             authMethod: config.authMethod,
-            password: config.password,
+            password: secretsForStorage.password,
             privateKeyPath: config.privateKeyPath,
-            passphrase: config.passphrase,
+            privateKeyData: secretsForStorage.privateKeyData,
+            passphrase: secretsForStorage.passphrase,
+            proxyType: config.proxyType,
+            proxyHost: config.proxyHost,
+            proxyPort: config.proxyPort,
+            proxyUsername: config.proxyUsername,
+            proxyPassword: secretsForStorage.proxyPassword,
+            startupCommand: config.startupCommand,
             ftpsEnabled: config.ftpsEnabled,
             domain: config.domain,
             rdpResolution: config.rdpResolution,
@@ -284,9 +298,16 @@ export function ConnectionDialog({
             protocol: config.protocol,
             folder: connectionFolder,
             authMethod: config.authMethod,
-            password: config.password,
+            password: secretsForStorage.password,
             privateKeyPath: config.privateKeyPath,
-            passphrase: config.passphrase,
+            privateKeyData: secretsForStorage.privateKeyData,
+            passphrase: secretsForStorage.passphrase,
+            proxyType: config.proxyType,
+            proxyHost: config.proxyHost,
+            proxyPort: config.proxyPort,
+            proxyUsername: config.proxyUsername,
+            proxyPassword: secretsForStorage.proxyPassword,
+            startupCommand: config.startupCommand,
             ftpsEnabled: config.ftpsEnabled,
             domain: config.domain,
             rdpResolution: config.rdpResolution,

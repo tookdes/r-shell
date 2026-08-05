@@ -36,6 +36,23 @@ import {
 const SCHEMA_VERSION = 1;
 const LANGUAGE_STORAGE_KEY = 'r-shell-language';
 
+/**
+ * Authentication material is machine-bound (encrypted with the local app key)
+ * or may originate from an older plaintext configuration. Config bundles are
+ * portable, so they intentionally contain connection metadata only.
+ */
+export function stripConnectionSecrets(connection: ConnectionData): ConnectionData {
+  const {
+    password: _password,
+    passphrase: _passphrase,
+    vncPassword: _vncPassword,
+    privateKeyData: _privateKeyData,
+    proxyPassword: _proxyPassword,
+    ...safeConnection
+  } = connection;
+  return safeConnection;
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface ConfigBundle {
@@ -82,7 +99,7 @@ export async function exportAllConfig(): Promise<boolean> {
     };
 
     // Connections + folders
-    const connections = ConnectionStorageManager.getConnections();
+    const connections = ConnectionStorageManager.getConnections().map(stripConnectionSecrets);
     const folders = ConnectionStorageManager.getFolders();
     if (connections.length || folders.length) {
       bundle.data.connections = { connections, folders };
@@ -173,8 +190,12 @@ export async function importAllConfig(
 
     // 3a. Connections + folders -------------------------------------------------
     if (data.connections) {
+      const safeConnections = {
+        ...data.connections,
+        connections: data.connections.connections.map(stripConnectionSecrets),
+      };
       const importedCount = ConnectionStorageManager.importConnections(
-        JSON.stringify(data.connections),
+        JSON.stringify(safeConnections),
         merge,
       );
       result.connections = importedCount;
