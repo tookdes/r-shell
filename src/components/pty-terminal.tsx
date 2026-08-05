@@ -310,6 +310,55 @@ export function PtyTerminal({
       return true;
     });
 
+    // WKWebView can swallow the native `mouseup` entirely — it never reaches any
+    // JS listener (not xterm's document listener, nor a container-level relay).
+    // When that happens xterm.js's SelectionService stays stuck in "drag" mode:
+    // its document-level mousemove listener keeps extending the selection even
+    // though no button is held, and only ESC (which fires onUserInput →
+    // clearSelection) recovers.
+    //
+    // mouseup-based relays cannot fix this because the event never arrives. But
+    // `mousemove` IS still delivered (that's exactly what causes the runaway
+    // selection). So we track the drag ourselves and detect the swallowed
+    // mouseup on the next mousemove: if the mouse moves with no buttons held
+    // (`e.buttons === 0`) while a left-button drag is supposedly active, the
+    // mouseup was lost. We then dispatch a synthetic mouseup on the document so
+    // xterm's SelectionService._handleMouseUp runs and removes its stuck
+    // document-level mousemove/mouseup listeners — without clearing the visible
+    // selection (unlike clearSelection()).
+    //
+    // Capture-phase listeners are used so they run before xterm's own
+    // bubble-phase handlers, guaranteeing the stuck listener is removed before
+    // it can extend the selection for the current event.
+    const selectionDoc = term.element?.ownerDocument;
+    let selectionDragInProgress = false;
+    const trackSelectionDragStart = (e: MouseEvent) => {
+      if (e.button === 0) selectionDragInProgress = true;
+    };
+    const trackSelectionDragEnd = () => {
+      selectionDragInProgress = false;
+    };
+    const detectStuckSelectionDrag = (e: MouseEvent) => {
+      if (selectionDragInProgress && e.buttons === 0 && selectionDoc) {
+        selectionDragInProgress = false;
+        selectionDoc.dispatchEvent(new MouseEvent('mouseup', {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          button: 0,
+          buttons: 0,
+          clientX: e.clientX,
+          clientY: e.clientY,
+          detail: e.detail,
+        }));
+      }
+    };
+    if (selectionDoc) {
+      selectionDoc.addEventListener('mousedown', trackSelectionDragStart, true);
+      selectionDoc.addEventListener('mouseup', trackSelectionDragEnd, true);
+      selectionDoc.addEventListener('mousemove', detectStuckSelectionDrag, true);
+    }
+
     // Welcome message
     term.writeln('\x1b[1;32m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m');
     term.writeln(`\x1b[1;36m  ${connectionName}\x1b[0m`);
@@ -388,7 +437,7 @@ export function PtyTerminal({
           if (wsPort > 0) {
             break;
           }
-        } catch (error) {
+        } catch (_error) {
           if (attempt === 11) {
             term.write('\r\n\x1b[31m[Failed to resolve WebSocket port]\x1b[0m\r\n');
             connectionStatusRef.current = 'disconnected';
@@ -450,17 +499,9 @@ export function PtyTerminal({
       //    pending byte count drops below LOW_WATER, avoiding per-frame ACKs.
       // =========================================================================
 
-      /** High watermark (bytes): above this, the buffer is considered "full" and
-       *  we stop granting credits until xterm drains below LOW_WATER.  128 KB
-       *  keeps the emulator snappy for keystrokes under fast input (xterm guide
-       *  recommends ≤ 500 KB for responsiveness). */
-      const HIGH_WATER = 128 * 1024;
-      /** Low watermark (bytes): below this, we grant a batch of credits to the
-       *  backend so it can send more data. */
+      /** Low watermark (bytes): below this, we grant a credit to the backend so
+       *  it can send more data. */
       const LOW_WATER = 16 * 1024;
-      /** How many credits to grant each time watermark drops below LOW_WATER.
-       *  Keeps the pipeline flowing without flooding the WS receive queue. */
-      const CREDIT_BATCH = 4;
 
       const grantCredits = (count: number) => {
         if (ws.readyState !== WebSocket.OPEN || count <= 0) {
@@ -834,6 +875,11 @@ export function PtyTerminal({
       lineFeedDisposable.dispose();
       window.removeEventListener('resize', handleWindowResize);
       resizeObserver.disconnect();
+      if (selectionDoc) {
+        selectionDoc.removeEventListener('mousedown', trackSelectionDragStart, true);
+        selectionDoc.removeEventListener('mouseup', trackSelectionDragEnd, true);
+        selectionDoc.removeEventListener('mousemove', detectStuckSelectionDrag, true);
+      }
       if (fitTimer) clearTimeout(fitTimer);
       
       // Dispose WebGL addon FIRST so GPU textures are released before the
