@@ -261,7 +261,9 @@
       "imageOpacity": "Image Opacity: {{opacity}}%",
       "imageBlur": "Image Blur: {{blur}}px",
       "imagePosition": "Image Position",
-      "imageSizeWarning": "Image must be less than 5MB"
+      "imageSizeWarning": "Image must be less than 5MB",
+      "sendModifiedEnter": "Send modified Enter as escape sequence",
+      "sendModifiedEnterDesc": "Send Shift+Enter (and Ctrl/Alt/Meta+Enter) as a CSI u key sequence (e.g. ESC[13;2u) so terminal apps like opencode can distinguish it from a plain Enter. Enable for apps that use Shift+Enter to insert a newline."
     },
     "editor": {
       "title": "Code Editor",

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizePtyInput } from '../lib/pty-input';
+import { encodeModifiedEnterCsiU, normalizePtyInput } from '../lib/pty-input';
 
 describe('normalizePtyInput (#37 line continuation)', () => {
   it('keeps bare CR unchanged', () => {
@@ -21,5 +21,43 @@ describe('normalizePtyInput (#37 line continuation)', () => {
 
   it('handles mixed endings', () => {
     expect(normalizePtyInput('a\r\nb\nc\r')).toBe('a\rb\rc\r');
+  });
+});
+
+describe('encodeModifiedEnterCsiU (CSI u modified-Enter)', () => {
+  it('encodes Shift+Enter as ESC[13;2u', () => {
+    expect(
+      encodeModifiedEnterCsiU({ shiftKey: true, altKey: false, ctrlKey: false, metaKey: false }),
+    ).toBe('\x1b[13;2u');
+  });
+
+  it('encodes Ctrl+Enter as ESC[13;5u', () => {
+    expect(
+      encodeModifiedEnterCsiU({ shiftKey: false, altKey: false, ctrlKey: true, metaKey: false }),
+    ).toBe('\x1b[13;5u');
+  });
+
+  it('encodes Alt+Enter as ESC[13;3u', () => {
+    expect(
+      encodeModifiedEnterCsiU({ shiftKey: false, altKey: true, ctrlKey: false, metaKey: false }),
+    ).toBe('\x1b[13;3u');
+  });
+
+  it('encodes Meta+Enter as ESC[13;9u', () => {
+    expect(
+      encodeModifiedEnterCsiU({ shiftKey: false, altKey: false, ctrlKey: false, metaKey: true }),
+    ).toBe('\x1b[13;9u');
+  });
+
+  it('encodes Shift+Ctrl+Alt+Meta+Enter as ESC[13;16u', () => {
+    expect(
+      encodeModifiedEnterCsiU({ shiftKey: true, altKey: true, ctrlKey: true, metaKey: true }),
+    ).toBe('\x1b[13;16u');
+  });
+
+  it('does not produce a plain Enter for unmodified presses', () => {
+    expect(
+      encodeModifiedEnterCsiU({ shiftKey: false, altKey: false, ctrlKey: false, metaKey: false }),
+    ).toBe('\x1b[13;1u');
   });
 });

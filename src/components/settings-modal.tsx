@@ -571,6 +571,19 @@ export function SettingsModal({ open, onOpenChange, onAppearanceChange, onCheckF
                   />
                 </div>
 
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label>{t('settings.terminal.sendModifiedEnter')}</Label>
+                    <p className="text-sm text-muted-foreground">
+                      {t('settings.terminal.sendModifiedEnterDesc')}
+                    </p>
+                  </div>
+                  <Switch
+                    checked={terminalAppearance.sendModifiedEnterAsCsiU}
+                    onCheckedChange={(checked) => updateTerminalAppearance('sendModifiedEnterAsCsiU', checked)}
+                  />
+                </div>
+
                 {terminalAppearance.allowTransparency && (
                   <div className="space-y-2">
                     <Label>{t('settings.terminal.opacity', { opacity: terminalAppearance.opacity })}</Label>
