@@ -261,7 +261,9 @@
       "imageOpacity": "图片不透明度：{{opacity}}%",
       "imageBlur": "图片模糊度：{{blur}}px",
       "imagePosition": "图片位置",
-      "imageSizeWarning": "图片必须小于 5MB"
+      "imageSizeWarning": "图片必须小于 5MB",
+      "sendModifiedEnter": "将带修饰键的 Enter 作为转义序列发送",
+      "sendModifiedEnterDesc": "将 Shift+Enter（以及 Ctrl/Alt/Meta+Enter）以 CSI u 键序列（如 ESC[13;2u）发送，使 opencode 等终端应用能够区分它与普通回车。适用于使用 Shift+Enter 换行的应用。"
     },
     "editor": {
       "title": "代码编辑器",

@@ -24,6 +24,10 @@ export interface TerminalAppearanceSettings {
   scrollback: number;
   allowTransparency: boolean;
   opacity: number;
+  /** Send modified Enter (Shift/Ctrl/Alt/Meta+Enter) as a CSI u key sequence
+   *  (e.g. ESC[13;2u) so terminal apps like opencode can distinguish it from
+   *  a plain Enter. Defaults to off; enable per connection needs. */
+  sendModifiedEnterAsCsiU: boolean;
   // Background image settings
   backgroundImage: string; // Base64 data URL or empty string
   backgroundImageOpacity: number; // 0-100
@@ -319,6 +323,7 @@ export const defaultAppearanceSettings: TerminalAppearanceSettings = {
   scrollback: DEFAULT_TERMINAL_SCROLLBACK,
   allowTransparency: false,
   opacity: 100,
+  sendModifiedEnterAsCsiU: false,
   // Background image defaults
   backgroundImage: '',
   backgroundImageOpacity: 30,

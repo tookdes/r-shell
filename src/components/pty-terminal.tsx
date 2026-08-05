@@ -15,7 +15,7 @@ import { toast } from 'sonner';
 import { signalReady } from '../lib/restoration-manager';
 import { useTerminalCallbacks } from '../lib/terminal-callbacks-context';
 import { loadConnectionTransportSettings } from '../lib/connection-transport-settings';
-import { normalizePtyInput } from '../lib/pty-input';
+import { encodeModifiedEnterCsiU, normalizePtyInput } from '../lib/pty-input';
 import i18n from '../lib/i18n';
 import '@xterm/xterm/css/xterm.css';
 
@@ -115,6 +115,10 @@ export function PtyTerminal({
   if (connectionIdBytesRef.current === null) {
     connectionIdBytesRef.current = inputEncoderRef.current.encode(connectionId);
   }
+  // Whether modified Enter (Shift/Ctrl/Alt/Meta+Enter) should be sent as a
+  // CSI u key sequence. Kept in a ref so the key handler (attached once per
+  // mount) always reads the current preference without rebuilding the session.
+  const sendModifiedEnterRef = React.useRef(false);
 
   const sendInputToPty = React.useCallback((data: string): boolean => {
     const ws = wsRef.current;
@@ -274,6 +278,21 @@ export function PtyTerminal({
       // fire once per event type — causing 2-3× duplicate operations.
       // Only process keydown; let xterm handle keypress/keyup normally.
       if (event.type !== 'keydown') {
+        return true;
+      }
+
+      // Modified Enter (Shift/Ctrl/Alt/Meta+Enter) is folded by xterm into a
+      // plain `\r`, so terminal apps like opencode cannot tell it apart from a
+      // regular Enter (which they treat as "send message"). When the setting
+      // is enabled, send the standard CSI u key sequence (e.g. Shift+Enter →
+      // ESC[13;2u) instead, matching Windows Terminal's sendInput mapping.
+      if (event.key === 'Enter' && (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey)) {
+        if (sendModifiedEnterRef.current) {
+          event.preventDefault();
+          sendInputToPty(encodeModifiedEnterCsiU(event));
+          return false;
+        }
+        // Setting disabled: keep xterm's default behaviour (plain Enter).
         return true;
       }
 
@@ -916,6 +935,7 @@ export function PtyTerminal({
     const term = xtermRef.current;
     if (!term) return;
     const currentAppearance = loadAppearanceSettings();
+    sendModifiedEnterRef.current = currentAppearance.sendModifiedEnterAsCsiU;
     const opts = getThemeAwareTerminalOptions(currentAppearance);
     term.options.theme = opts.theme;
     term.options.fontSize = opts.fontSize;
