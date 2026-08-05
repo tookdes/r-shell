@@ -36,7 +36,7 @@ export function connectionHasCredentials(connection: CredentialFields): boolean 
   }
 
   // password, keyboard-interactive, or unknown — need a password
-  return !!(typeof connection.password === 'string' && connection.password.length > 0);
+  return typeof connection.password === 'string' && connection.password.length > 0;
 }
 
 const sessionCredentialCache = new Map<string, CredentialFields>();
@@ -50,18 +50,23 @@ export function rememberSessionCredentials(
   const prev = sessionCredentialCache.get(profileId) ?? {};
   sessionCredentialCache.set(profileId, {
     ...prev,
-    authMethod: credentials.authMethod ?? prev.authMethod,
-    password: credentials.password || prev.password,
-    privateKeyPath: credentials.privateKeyPath || prev.privateKeyPath,
-    privateKeyData: credentials.privateKeyData || prev.privateKeyData,
-    passphrase: credentials.passphrase || prev.passphrase,
-    proxyPassword: credentials.proxyPassword || prev.proxyPassword,
-    vncPassword: credentials.vncPassword || prev.vncPassword,
+    authMethod: credentials.authMethod !== undefined ? credentials.authMethod : prev.authMethod,
+    password: credentials.password !== undefined ? credentials.password : prev.password,
+    privateKeyPath:
+      credentials.privateKeyPath !== undefined ? credentials.privateKeyPath : prev.privateKeyPath,
+    privateKeyData:
+      credentials.privateKeyData !== undefined ? credentials.privateKeyData : prev.privateKeyData,
+    passphrase: credentials.passphrase !== undefined ? credentials.passphrase : prev.passphrase,
+    proxyPassword:
+      credentials.proxyPassword !== undefined ? credentials.proxyPassword : prev.proxyPassword,
+    vncPassword:
+      credentials.vncPassword !== undefined ? credentials.vncPassword : prev.vncPassword,
   });
 }
 
 export function getSessionCredentials(profileId: string): CredentialFields | undefined {
-  return sessionCredentialCache.get(profileId);
+  const cached = sessionCredentialCache.get(profileId);
+  return cached ? { ...cached } : undefined;
 }
 
 export function clearSessionCredentials(profileId?: string): void {
@@ -74,7 +79,8 @@ export function clearSessionCredentials(profileId?: string): void {
 
 /**
  * Merge stored connection data with session-cached secrets.
- * Session cache wins for secret fields when storage has them stripped.
+ * Cached fields fill only values omitted from storage. Explicit empty values are
+ * preserved so clearing a credential cannot resurrect an older cached secret.
  */
 export function mergeWithSessionCredentials<T extends CredentialFields>(
   profileId: string,
@@ -85,12 +91,15 @@ export function mergeWithSessionCredentials<T extends CredentialFields>(
 
   return {
     ...stored,
-    password: stored.password || cached.password,
-    privateKeyPath: stored.privateKeyPath || cached.privateKeyPath,
-    privateKeyData: stored.privateKeyData || cached.privateKeyData,
-    passphrase: stored.passphrase || cached.passphrase,
-    proxyPassword: stored.proxyPassword || cached.proxyPassword,
-    vncPassword: stored.vncPassword || cached.vncPassword,
-    authMethod: stored.authMethod || cached.authMethod,
+    password: stored.password !== undefined ? stored.password : cached.password,
+    privateKeyPath:
+      stored.privateKeyPath !== undefined ? stored.privateKeyPath : cached.privateKeyPath,
+    privateKeyData:
+      stored.privateKeyData !== undefined ? stored.privateKeyData : cached.privateKeyData,
+    passphrase: stored.passphrase !== undefined ? stored.passphrase : cached.passphrase,
+    proxyPassword:
+      stored.proxyPassword !== undefined ? stored.proxyPassword : cached.proxyPassword,
+    vncPassword: stored.vncPassword !== undefined ? stored.vncPassword : cached.vncPassword,
+    authMethod: stored.authMethod !== undefined ? stored.authMethod : cached.authMethod,
   };
 }

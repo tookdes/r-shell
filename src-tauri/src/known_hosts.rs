@@ -158,9 +158,29 @@ pub fn forget(host: &str, port: u16) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Interactive TOFU (CrabPort-style):
-/// Match → accept; Changed → hard reject (still prompt so UI can show fingerprint);
-/// Unknown → prompt user; on accept, remember.
+#[allow(dead_code)] // Kept for callers that cannot await (sync accept-new path).
+/// Full host-key check used by SSH/SFTP handlers.
+///
+/// When `enabled` is false, every key is accepted (legacy behaviour).
+/// When enabled: Match accepts; Unknown accepts+remembers; Changed rejects.
+pub fn check_or_remember(host: &str, port: u16, key: &PublicKey, enabled: bool) -> bool {
+    // Sync path kept for tests / callers that cannot await.
+    // Unknown keys are auto-accepted (accept-new). Prefer `check_or_prompt`.
+    if !enabled {
+        return true;
+    }
+    match verify(host, port, key) {
+        HostKeyStatus::Match => true,
+        HostKeyStatus::Unknown => {
+            let _ = remember(host, port, key);
+            true
+        }
+        HostKeyStatus::Changed => false,
+    }
+}
+
+/// Interactive TOFU:
+/// Match -> accept; Unknown -> prompt and remember; Changed -> notify and reject.
 pub async fn check_or_prompt(host: &str, port: u16, key: &PublicKey, enabled: bool) -> bool {
     if !enabled {
         return true;
@@ -180,15 +200,10 @@ pub async fn check_or_prompt(host: &str, port: u16, key: &PublicKey, enabled: bo
         }
         HostKeyStatus::Changed => {
             tracing::error!("HOST KEY CHANGED for {host}:{port} — presented {fp} (possible MITM)");
-            // Still prompt so the user sees the fingerprint and can choose to trust
-            // the new key (which replaces the stored entry via remember).
-            let accepted = crate::host_key_prompt::prompt_user(host, port, &algo, &fp, true).await;
-            if accepted {
-                if let Err(e) = remember(host, port, key) {
-                    tracing::warn!("replaced host key but failed to persist known_hosts: {e}");
-                }
-            }
-            accepted
+            // Notify the user, but never accept or replace a changed key in-band.
+            // The stored entry must be explicitly removed before reconnecting.
+            let _ = crate::host_key_prompt::prompt_user(host, port, &algo, &fp, true).await;
+            false
         }
     }
 }

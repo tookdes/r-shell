@@ -55,13 +55,13 @@ fn build_app_menu<F: Fn(&str) -> String>(
     let file_menu = Submenu::with_id_and_items(
         app,
         "m_file",
-        &t("menuBar.file"),
+        t("menuBar.file"),
         true,
         &[
             &MenuItem::with_id(
                 app,
                 "new_connection",
-                &t("menuBar.newConnection"),
+                t("menuBar.newConnection"),
                 true,
                 Some("CmdOrCtrl+N"),
             )?,
@@ -69,14 +69,14 @@ fn build_app_menu<F: Fn(&str) -> String>(
             &MenuItem::with_id(
                 app,
                 "save_connection",
-                &t("menuBar.saveConnection"),
+                t("menuBar.saveConnection"),
                 true,
                 Some("CmdOrCtrl+S"),
             )?,
             &MenuItem::with_id(
                 app,
                 "close_connection",
-                &t("menuBar.closeTab"),
+                t("menuBar.closeTab"),
                 true,
                 None::<&str>,
             )?,
@@ -87,7 +87,7 @@ fn build_app_menu<F: Fn(&str) -> String>(
     let edit_menu = Submenu::with_id_and_items(
         app,
         "m_edit",
-        &t("menuBar.edit"),
+        t("menuBar.edit"),
         true,
         &[
             &PredefinedMenuItem::undo(app, Some(&t("menuBar.undo")))?,
@@ -99,11 +99,11 @@ fn build_app_menu<F: Fn(&str) -> String>(
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::select_all(app, Some(&t("menuBar.selectAll")))?,
             &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(app, "find", &t("menuBar.find"), true, Some("CmdOrCtrl+F"))?,
+            &MenuItem::with_id(app, "find", t("menuBar.find"), true, Some("CmdOrCtrl+F"))?,
             &MenuItem::with_id(
                 app,
                 "clear_screen",
-                &t("menuBar.clearScreen"),
+                t("menuBar.clearScreen"),
                 true,
                 Some("CmdOrCtrl+L"),
             )?,
@@ -114,15 +114,15 @@ fn build_app_menu<F: Fn(&str) -> String>(
     let tools_menu = Submenu::with_id_and_items(
         app,
         "m_tools",
-        &t("menuBar.tools"),
+        t("menuBar.tools"),
         true,
         &[
-            &MenuItem::with_id(app, "settings", &t("menuBar.options"), true, None::<&str>)?,
+            &MenuItem::with_id(app, "settings", t("menuBar.options"), true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(
                 app,
                 "check_updates",
-                &t("menuBar.checkForUpdates"),
+                t("menuBar.checkForUpdates"),
                 true,
                 None::<&str>,
             )?,
@@ -133,38 +133,38 @@ fn build_app_menu<F: Fn(&str) -> String>(
     let connection_menu = Submenu::with_id_and_items(
         app,
         "m_connection",
-        &t("menuBar.connection"),
+        t("menuBar.connection"),
         true,
         &[
             &MenuItem::with_id(
                 app,
                 "new_tab",
-                &t("menuBar.newTab"),
+                t("menuBar.newTab"),
                 true,
                 Some("CmdOrCtrl+T"),
             )?,
             &MenuItem::with_id(
                 app,
                 "clone_tab",
-                &t("menuBar.duplicateTab"),
+                t("menuBar.duplicateTab"),
                 true,
                 Some("CmdOrCtrl+D"),
             )?,
             &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(app, "next_tab", &t("menuBar.nextTab"), true, None::<&str>)?,
+            &MenuItem::with_id(app, "next_tab", t("menuBar.nextTab"), true, None::<&str>)?,
             &MenuItem::with_id(
                 app,
                 "prev_tab",
-                &t("menuBar.previousTab"),
+                t("menuBar.previousTab"),
                 true,
                 None::<&str>,
             )?,
             &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(app, "reconnect", &t("menuBar.reconnect"), true, Some("F5"))?,
+            &MenuItem::with_id(app, "reconnect", t("menuBar.reconnect"), true, Some("F5"))?,
             &MenuItem::with_id(
                 app,
                 "disconnect",
-                &t("menuBar.disconnect"),
+                t("menuBar.disconnect"),
                 true,
                 None::<&str>,
             )?,
@@ -175,7 +175,7 @@ fn build_app_menu<F: Fn(&str) -> String>(
     let window_menu = Submenu::with_id_and_items(
         app,
         "m_window",
-        &t("menuBar.window"),
+        t("menuBar.window"),
         true,
         &[
             &PredefinedMenuItem::minimize(app, Some(&t("menuBar.minimize")))?,
@@ -256,7 +256,7 @@ pub fn run() {
                 // Register native macOS menu and forward item events to the frontend
                 #[cfg(target_os = "macos")]
                 {
-                    match build_app_menu(&app.handle(), default_menu_text) {
+                    match build_app_menu(app.handle(), default_menu_text) {
                         Ok(menu) => {
                             if let Err(e) = app.set_menu(menu) {
                                 tracing::warn!("Failed to set native menu: {}", e);

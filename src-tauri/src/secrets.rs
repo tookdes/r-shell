@@ -26,6 +26,10 @@ fn key_path() -> PathBuf {
     data_dir().join(".secrets_key")
 }
 
+fn random_fill(buf: &mut [u8]) -> Result<(), String> {
+    getrandom::fill(buf).map_err(|e| format!("rng failed: {e}"))
+}
+
 fn load_or_create_key() -> Result<[u8; KEY_LEN], String> {
     let _guard = KEY_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let path = key_path();
@@ -42,9 +46,8 @@ fn load_or_create_key() -> Result<[u8; KEY_LEN], String> {
         return Ok(key);
     }
     let mut key = [0u8; KEY_LEN];
-    getrandom::fill(&mut key).map_err(|e| format!("rng failed: {e}"))?;
+    random_fill(&mut key)?;
     fs::write(&path, key).map_err(|e| format!("write secrets key: {e}"))?;
-    // Best-effort restrictive permissions on Unix; no-op on Windows.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -53,12 +56,11 @@ fn load_or_create_key() -> Result<[u8; KEY_LEN], String> {
     Ok(key)
 }
 
-/// Encrypt plaintext; returns base64 blob.
 pub fn encrypt_string(plaintext: &str) -> Result<String, String> {
     let key = load_or_create_key()?;
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| format!("aes init: {e}"))?;
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    getrandom::fill(&mut nonce_bytes).map_err(|e| format!("rng failed: {e}"))?;
+    random_fill(&mut nonce_bytes)?;
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
         .encrypt(nonce, plaintext.as_bytes())
@@ -69,7 +71,6 @@ pub fn encrypt_string(plaintext: &str) -> Result<String, String> {
     Ok(base64::engine::general_purpose::STANDARD.encode(out))
 }
 
-/// Decrypt a blob produced by [`encrypt_string`].
 pub fn decrypt_string(blob_b64: &str) -> Result<String, String> {
     let key = load_or_create_key()?;
     let blob = base64::engine::general_purpose::STANDARD
@@ -84,4 +85,16 @@ pub fn decrypt_string(blob_b64: &str) -> Result<String, String> {
         .decrypt(nonce, &blob[NONCE_LEN..])
         .map_err(|_| "decrypt failed (wrong key or corrupted data)".to_string())?;
     String::from_utf8(plain).map_err(|e| format!("utf8: {e}"))
+}
+
+#[allow(dead_code)] // Heuristic used by frontend credential flows.
+pub fn looks_encrypted(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.len() < 24 {
+        return false;
+    }
+    if let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(trimmed) {
+        return raw.len() >= NONCE_LEN + 16;
+    }
+    false
 }

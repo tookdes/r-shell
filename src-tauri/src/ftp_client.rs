@@ -80,8 +80,7 @@ impl FtpClient {
 
             tracing::info!("FTPS TCP connected, starting TLS handshake...");
 
-            let tls_connector =
-                suppaftp::async_native_tls::TlsConnector::new().danger_accept_invalid_certs(true);
+            let tls_connector = suppaftp::async_native_tls::TlsConnector::new();
             let secure_stream = ftp_stream
                 .into_secure(
                     suppaftp::AsyncNativeTlsConnector::from(tls_connector),

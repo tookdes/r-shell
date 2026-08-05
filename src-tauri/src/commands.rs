@@ -441,51 +441,48 @@ pub async fn sftp_download_file(
     request: FileTransferRequest,
     state: State<'_, Arc<ConnectionManager>>,
 ) -> Result<FileTransferResponse, String> {
+    let cancel = state.transfer_token(&request.connection_id).await;
     let connection = state
         .get_connection(&request.connection_id)
         .await
         .ok_or("Connection not found")?;
-
     let client = connection.read().await;
 
-    // If local_path is empty, download to memory (for browser download)
-    if request.local_path.is_empty() {
-        match client.download_file_to_memory(&request.remote_path).await {
-            Ok(data) => {
-                let bytes = data.len() as u64;
-                Ok(FileTransferResponse {
-                    success: true,
-                    bytes_transferred: Some(bytes),
-                    data: Some(data),
-                    error: None,
+    let transfer = async {
+        if request.local_path.is_empty() {
+            client
+                .download_file_to_memory(&request.remote_path)
+                .await
+                .map(|data| {
+                    let bytes = data.len() as u64;
+                    (bytes, Some(data))
                 })
-            }
-            Err(e) => Ok(FileTransferResponse {
-                success: false,
-                bytes_transferred: None,
-                data: None,
-                error: Some(e.to_string()),
-            }),
+        } else {
+            client
+                .download_file(&request.remote_path, &request.local_path)
+                .await
+                .map(|bytes| (bytes, None))
         }
-    } else {
-        // Download to local file
-        match client
-            .download_file(&request.remote_path, &request.local_path)
-            .await
-        {
-            Ok(bytes) => Ok(FileTransferResponse {
-                success: true,
-                bytes_transferred: Some(bytes),
-                data: None,
-                error: None,
-            }),
-            Err(e) => Ok(FileTransferResponse {
-                success: false,
-                bytes_transferred: None,
-                data: None,
-                error: Some(e.to_string()),
-            }),
-        }
+    };
+
+    let result = tokio::select! {
+        _ = cancel.cancelled() => Err(anyhow::anyhow!("Transfer cancelled")),
+        result = transfer => result,
+    };
+
+    match result {
+        Ok((bytes, data)) => Ok(FileTransferResponse {
+            success: true,
+            bytes_transferred: Some(bytes),
+            data,
+            error: None,
+        }),
+        Err(error) => Ok(FileTransferResponse {
+            success: false,
+            bytes_transferred: None,
+            data: None,
+            error: Some(error.to_string()),
+        }),
     }
 }
 
@@ -495,22 +492,28 @@ pub async fn sftp_upload_file(
     request: FileTransferRequest,
     state: State<'_, Arc<ConnectionManager>>,
 ) -> Result<FileTransferResponse, String> {
+    let cancel = state.transfer_token(&request.connection_id).await;
     let connection = state
         .get_connection(&request.connection_id)
         .await
         .ok_or("Connection not found")?;
-
     let client = connection.read().await;
 
-    // If data is provided, write directly; otherwise read from local_path
-    let result = if let Some(data) = &request.data {
-        client
-            .upload_file_from_bytes(data, &request.remote_path)
-            .await
-    } else {
-        client
-            .upload_file(&request.local_path, &request.remote_path)
-            .await
+    let transfer = async {
+        if let Some(data) = &request.data {
+            client
+                .upload_file_from_bytes(data, &request.remote_path)
+                .await
+        } else {
+            client
+                .upload_file(&request.local_path, &request.remote_path)
+                .await
+        }
+    };
+
+    let result = tokio::select! {
+        _ = cancel.cancelled() => Err(anyhow::anyhow!("Transfer cancelled")),
+        result = transfer => result,
     };
 
     match result {
@@ -520,11 +523,11 @@ pub async fn sftp_upload_file(
             data: None,
             error: None,
         }),
-        Err(e) => Ok(FileTransferResponse {
+        Err(error) => Ok(FileTransferResponse {
             success: false,
             bytes_transferred: None,
             data: None,
-            error: Some(e.to_string()),
+            error: Some(error.to_string()),
         }),
     }
 }
@@ -2496,11 +2499,11 @@ pub async fn download_remote_file(
             data: None,
             error: None,
         }),
-        Err(e) => Ok(FileTransferResponse {
+        Err(error) => Ok(FileTransferResponse {
             success: false,
             bytes_transferred: None,
             data: None,
-            error: Some(e.to_string()),
+            error: Some(error.to_string()),
         }),
     }
 }
@@ -2568,11 +2571,11 @@ pub async fn upload_remote_file(
             data: None,
             error: None,
         }),
-        Err(e) => Ok(FileTransferResponse {
+        Err(error) => Ok(FileTransferResponse {
             success: false,
             bytes_transferred: None,
             data: None,
-            error: Some(e.to_string()),
+            error: Some(error.to_string()),
         }),
     }
 }

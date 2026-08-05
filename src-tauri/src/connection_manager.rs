@@ -12,8 +12,8 @@ use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-/// A shared handle to a desktop (RDP/VNC) protocol client.
 type DesktopClient = Arc<RwLock<Box<dyn DesktopProtocol>>>;
+type DesktopConnectionMap = Arc<RwLock<HashMap<String, DesktopClient>>>;
 
 pub struct ConnectionManager {
     connections: Arc<RwLock<HashMap<String, Arc<RwLock<SshClient>>>>>,
@@ -27,7 +27,7 @@ pub struct ConnectionManager {
     /// FTP/FTPS connections
     ftp_connections: Arc<RwLock<HashMap<String, FtpClient>>>,
     /// Remote desktop (RDP/VNC) connections
-    desktop_connections: Arc<RwLock<HashMap<String, DesktopClient>>>,
+    desktop_connections: DesktopConnectionMap,
     /// Track protocol type per connection ID ("SSH", "SFTP", "FTP", "RDP", "VNC")
     connection_types: Arc<RwLock<HashMap<String, String>>>,
     // (see type alias above for `desktop_connections`)
@@ -156,6 +156,16 @@ impl ConnectionManager {
         for connection_id in ftp_ids {
             if let Err(error) = self.close_ftp_connection(&connection_id).await {
                 tracing::warn!("Failed to close FTP {}: {}", connection_id, error);
+            }
+        }
+
+        let desktop_ids: Vec<String> = {
+            let desktop = self.desktop_connections.read().await;
+            desktop.keys().cloned().collect()
+        };
+        for connection_id in desktop_ids {
+            if let Err(error) = self.close_desktop_connection(&connection_id).await {
+                tracing::warn!("Failed to close desktop {}: {}", connection_id, error);
             }
         }
 

@@ -10,17 +10,16 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 /// Preferred host-key algorithms advertised to the server, ordered from most to
-/// least preferred.  RSA variants (including the legacy `ssh-rsa` / SHA-1) are
-/// included so that older servers that only offer RSA host keys are still
-/// reachable.  The `openssl` feature on `russh` / `russh-keys` must be enabled
-/// for the RSA entries to have any effect.
+/// least preferred. RSA keys remain supported through rsa-sha2-256/512; the
+/// legacy `ssh-rsa` signature algorithm is intentionally excluded because it
+/// relies on SHA-1. The `openssl` feature on `russh` / `russh-keys` must be
+/// enabled for the RSA-SHA2 entries to have any effect.
 pub static PREFERRED_HOST_KEY_ALGOS: &[russh_keys::key::Name] = &[
     russh_keys::key::ED25519,
     russh_keys::key::ECDSA_SHA2_NISTP256,
     russh_keys::key::ECDSA_SHA2_NISTP521,
     russh_keys::key::RSA_SHA2_256,
     russh_keys::key::RSA_SHA2_512,
-    russh_keys::key::SSH_RSA,
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -386,6 +385,24 @@ impl SshClient {
             // Create a channel for resize requests
             let (resize_tx, mut resize_rx) = mpsc::channel::<(u32, u32)>(16);
 
+            // Optional startup command (sent once shell is ready).
+            if let Some(cmd) = self.startup_command.clone() {
+                let cmd = cmd.trim().to_string();
+                if !cmd.is_empty() {
+                    let startup_tx = input_tx.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                        let mut payload = cmd.replace("\r\n", "\n").replace('\r', "\n");
+                        if !payload.ends_with('\n') {
+                            payload.push('\n');
+                        }
+                        // SSH PTY expects CR as line terminator for most shells.
+                        let bytes = payload.replace('\n', "\r").into_bytes();
+                        let _ = startup_tx.send(bytes).await;
+                    });
+                }
+            }
+
             // Spawn task to handle input (frontend → SSH)
             // This is similar to ttyd's pty_write and INPUT command handling
             // Key: immediate write + flush for responsiveness
@@ -506,12 +523,9 @@ impl SshClient {
         F: FnMut(u64) -> bool + Send,
     {
         if let Some(session) = &self.session {
-            // Open SFTP subsystem
             let channel = session.channel_open_session().await?;
             channel.request_subsystem(true, "sftp").await?;
             let sftp = SftpSession::new(channel.into_stream()).await?;
-
-            // Open remote file for reading
             let mut remote_file = sftp.open(remote_path).await?;
             let mut local_file = tokio::fs::File::create(local_path).await?;
 
@@ -605,10 +619,7 @@ impl SshClient {
             let channel = session.channel_open_session().await?;
             channel.request_subsystem(true, "sftp").await?;
             let sftp = SftpSession::new(channel.into_stream()).await?;
-
-            // Create remote file for writing
             let mut remote_file = sftp.create(remote_path).await?;
-
             // Write data in chunks
             let mut buf = vec![0u8; 32768];
             let mut sent = 0u64;
@@ -632,7 +643,6 @@ impl SshClient {
                     }
                 }
             }
-
             remote_file.flush().await?;
             Ok(sent)
         } else {
