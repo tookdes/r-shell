@@ -63,11 +63,9 @@ pub async fn connect_tcp(
             }
             ProxyType::Socks5 => connect_socks5(p, target_host, target_port).await,
             ProxyType::Socks4 => Err(anyhow!("SOCKS4 proxy is not supported; use SOCKS5 or HTTP")),
-            ProxyType::None => {
-                TcpStream::connect((target_host, target_port))
-                    .await
-                    .with_context(|| format!("direct connect {target_host}:{target_port}"))
-            }
+            ProxyType::None => TcpStream::connect((target_host, target_port))
+                .await
+                .with_context(|| format!("direct connect {target_host}:{target_port}")),
         },
         _ => TcpStream::connect((target_host, target_port))
             .await

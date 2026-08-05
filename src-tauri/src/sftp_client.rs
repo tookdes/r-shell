@@ -1,11 +1,11 @@
 use anyhow::Result;
 use russh::*;
-use russh_keys::*;
 use russh_sftp::client::SftpSession;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_util::sync::CancellationToken;
 
 use crate::ssh::Client;
 
@@ -74,6 +74,7 @@ pub struct StandaloneSftpClient {
 }
 
 impl StandaloneSftpClient {
+    #[allow(dead_code)] // Used by unit tests.
     pub fn new() -> Self {
         Self {
             session: None,
@@ -115,7 +116,7 @@ impl StandaloneSftpClient {
         let mut ssh_session = tokio::time::timeout(connection_timeout, async {
             let stream = crate::proxy_stream::connect_tcp(&host, port, proxy.as_ref())
                 .await
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                .map_err(std::io::Error::other)?;
             client::connect_stream(ssh_config, stream, handler).await
         })
         .await
@@ -181,6 +182,7 @@ impl StandaloneSftpClient {
         })
     }
 
+    #[allow(dead_code)] // Used by unit tests.
     pub fn is_connected(&self) -> bool {
         self.session.is_some() && self.sftp.is_some()
     }
@@ -230,7 +232,7 @@ impl StandaloneSftpClient {
             let size = attrs.size.unwrap_or(0);
             let modified = attrs.mtime.map(|t| chrono_from_unix_timestamp(t as u64));
 
-            let permissions = attrs.permissions.map(|p| format_permissions(p));
+            let permissions = attrs.permissions.map(format_permissions);
 
             let file_type = if attrs.is_dir() {
                 FileEntryType::Directory
@@ -262,7 +264,18 @@ impl StandaloneSftpClient {
     }
 
     /// Download a remote file to a local path. Returns bytes downloaded.
-    pub async fn download_file(&self, remote_path: &str, local_path: &str) -> Result<u64> {
+    /// Stream a remote file to a local path in chunks with progress reporting
+    /// and cancellation. `on_progress(bytes_so_far)` returning `false` aborts.
+    pub async fn download_file_progress<F>(
+        &self,
+        remote_path: &str,
+        local_path: &str,
+        cancel: &CancellationToken,
+        on_progress: &mut F,
+    ) -> Result<u64>
+    where
+        F: FnMut(u64) -> bool + Send,
+    {
         let sftp = self
             .sftp
             .as_ref()
@@ -272,50 +285,87 @@ impl StandaloneSftpClient {
             .open(remote_path)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to open remote file '{}': {}", remote_path, e))?;
+        let mut local_file = tokio::fs::File::create(local_path).await?;
 
-        let mut buffer = Vec::new();
         let mut temp_buf = vec![0u8; 32768];
         let mut total_bytes = 0u64;
 
         loop {
-            let n = remote_file.read(&mut temp_buf).await?;
-            if n == 0 {
-                break;
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    let _ = local_file.flush().await;
+                    return Err(anyhow::anyhow!("Transfer cancelled"));
+                }
+                result = remote_file.read(&mut temp_buf) => {
+                    let n = result?;
+                    if n == 0 {
+                        break;
+                    }
+                    local_file.write_all(&temp_buf[..n]).await?;
+                    total_bytes += n as u64;
+                    if !on_progress(total_bytes) {
+                        let _ = local_file.flush().await;
+                        return Err(anyhow::anyhow!("Transfer cancelled"));
+                    }
+                }
             }
-            buffer.extend_from_slice(&temp_buf[..n]);
-            total_bytes += n as u64;
         }
 
-        tokio::fs::write(local_path, buffer).await?;
+        local_file.flush().await?;
         Ok(total_bytes)
     }
 
-    /// Upload a local file to a remote path. Returns bytes uploaded.
-    pub async fn upload_file(&self, local_path: &str, remote_path: &str) -> Result<u64> {
+    /// Stream a local file to a remote path in chunks with progress reporting
+    /// and cancellation. `on_progress(bytes_sent)` returning `false` aborts.
+    pub async fn upload_file_progress<F>(
+        &self,
+        local_path: &str,
+        remote_path: &str,
+        cancel: &CancellationToken,
+        on_progress: &mut F,
+    ) -> Result<u64>
+    where
+        F: FnMut(u64) -> bool + Send,
+    {
         let sftp = self
             .sftp
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("SFTP session not connected"))?;
 
-        let data = tokio::fs::read(local_path)
+        let mut local_file = tokio::fs::File::open(local_path)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to read local file '{}': {}", local_path, e))?;
-        let total_bytes = data.len() as u64;
 
         let mut remote_file = sftp.create(remote_path).await.map_err(|e| {
             anyhow::anyhow!("Failed to create remote file '{}': {}", remote_path, e)
         })?;
 
-        let chunk_size = 32768;
-        let mut offset = 0;
-        while offset < data.len() {
-            let end = std::cmp::min(offset + chunk_size, data.len());
-            remote_file.write_all(&data[offset..end]).await?;
-            offset = end;
+        let mut buf = vec![0u8; 32768];
+        let mut sent = 0u64;
+
+        loop {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    return Err(anyhow::anyhow!("Transfer cancelled"));
+                }
+                result = local_file.read(&mut buf) => {
+                    let n = result?;
+                    if n == 0 {
+                        break;
+                    }
+                    remote_file.write_all(&buf[..n]).await?;
+                    sent += n as u64;
+                    if !on_progress(sent) {
+                        return Err(anyhow::anyhow!("Transfer cancelled"));
+                    }
+                }
+            }
         }
         remote_file.flush().await?;
 
-        Ok(total_bytes)
+        Ok(sent)
     }
 
     /// Create a directory on the remote server.
@@ -573,8 +623,9 @@ mod tests {
             SftpAuthMethod::PublicKey {
                 key_path,
                 passphrase,
+                ..
             } => {
-                assert_eq!(key_path, "/home/user/.ssh/id_rsa");
+                assert_eq!(key_path.as_deref(), Some("/home/user/.ssh/id_rsa"));
                 assert!(passphrase.is_none());
             }
             _ => panic!("Expected PublicKey auth method"),

@@ -107,8 +107,10 @@ export function transferQueueReducer(
     }
 
     case "COMPLETE": {
+      // Never overwrite a cancelled item — a cancelled in-flight invoke may
+      // still resolve with success after the backend aborts it.
       return state.map((item) =>
-        item.id === action.id
+        item.id === action.id && item.status !== "cancelled"
           ? {
               ...item,
               status: "completed" as const,
@@ -120,8 +122,9 @@ export function transferQueueReducer(
     }
 
     case "FAIL": {
+      // Never overwrite a cancelled item (same race as COMPLETE).
       return state.map((item) =>
-        item.id === action.id
+        item.id === action.id && item.status !== "cancelled"
           ? {
               ...item,
               status: "failed" as const,

@@ -87,7 +87,6 @@ export function PtyTerminal({
   const scopeId = React.useId().replace(/:/g, '');
   
   // Track whether terminal was created with background image (determines renderer choice)
-  const hadBackgroundImageRef = React.useRef<boolean | null>(null);
   // Track connection status to avoid duplicate notifications
   const connectionStatusRef = React.useRef<'connected' | 'connecting' | 'disconnected'>('connecting');
 
@@ -110,6 +109,12 @@ export function PtyTerminal({
   const MAX_AUTO_RECONNECT_AFTER_DROP = 5;
 
   const inputEncoderRef = React.useRef(new TextEncoder());
+  // Cached UTF-8 bytes of the connection id — the binary frame format needs
+  // them on every keystroke, so encode once instead of per-keystroke.
+  const connectionIdBytesRef = React.useRef<Uint8Array | null>(null);
+  if (connectionIdBytesRef.current === null) {
+    connectionIdBytesRef.current = inputEncoderRef.current.encode(connectionId);
+  }
 
   const sendInputToPty = React.useCallback((data: string): boolean => {
     const ws = wsRef.current;
@@ -121,13 +126,20 @@ export function PtyTerminal({
     // after a trailing `\`, bash line-continuation is "backslash + single
     // newline". Sending `\r\n` becomes two line ends (continue, then empty
     // submit), so `ls \` + Enter + `-a` runs as two commands (#37).
+    //
+    // Binary fast path (symmetric with the backend output frame encoding):
+    //   [0x00][id_len: u16 BE][connection_id bytes][data bytes]
+    // Avoids JSON array-of-bytes serialisation on every keystroke / paste.
     const normalizedInput = normalizePtyInput(data);
-    const dataBytes = Array.from(inputEncoderRef.current.encode(normalizedInput));
-    ws.send(JSON.stringify({
-      type: 'Input',
-      connection_id: connectionId,
-      data: dataBytes,
-    }));
+    const dataBytes = inputEncoderRef.current.encode(normalizedInput);
+    const idBytes = connectionIdBytesRef.current!;
+    const payload = new Uint8Array(3 + idBytes.length + dataBytes.length);
+    payload[0] = 0x00;
+    payload[1] = (idBytes.length >> 8) & 0xff;
+    payload[2] = idBytes.length & 0xff;
+    payload.set(idBytes, 3);
+    payload.set(dataBytes, 3 + idBytes.length);
+    ws.send(payload.buffer);
     return true;
   }, [connectionId]);
 
@@ -157,12 +169,10 @@ export function PtyTerminal({
   const hasBackgroundImage = !!appearance.backgroundImage;
   
   // Use a key that only changes when we need to switch renderers
-  const terminalKey = React.useMemo(() => {
-    // Update the ref to track current state
-    const key = hasBackgroundImage ? 'bg' : 'no-bg';
-    hadBackgroundImageRef.current = hasBackgroundImage;
-    return key;
-  }, [hasBackgroundImage]);
+  const terminalKey = React.useMemo(
+    () => (hasBackgroundImage ? 'bg' : 'no-bg'),
+    [hasBackgroundImage],
+  );
   
   React.useEffect(() => {
     if (!terminalRef.current) return;
@@ -775,7 +785,6 @@ export function PtyTerminal({
           rows,
         };
         ws.send(JSON.stringify(resizeMsg));
-        console.log(`[PTY Terminal] Terminal resized to ${cols}x${rows}`);
       }
     });
 

@@ -6,6 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 /// A decoded framebuffer update — a dirty rectangle with RGBA pixel data.
 #[derive(Clone, Debug)]
+#[allow(dead_code)] // Reserved for desktop streaming.
 pub struct FrameUpdate {
     pub x: u16,
     pub y: u16,
@@ -23,6 +24,7 @@ pub struct FrameUpdate {
 pub trait DesktopProtocol: Send + Sync {
     /// Start the frame update loop, sending `FrameUpdate` messages via the
     /// provided sender until the cancellation token is triggered.
+    #[allow(dead_code)] // Reserved for desktop streaming.
     async fn start_frame_loop(
         &self,
         frame_tx: mpsc::UnboundedSender<FrameUpdate>,
@@ -84,6 +86,7 @@ pub struct DesktopConnectResponse {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // RDP is disabled product-wide; fields kept for config compat.
 pub struct RdpConfig {
     pub host: String,
     pub port: u16,
@@ -95,6 +98,7 @@ pub struct RdpConfig {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Fields kept for config compat (VNC uses password/color_depth via request).
 pub struct VncConfig {
     pub host: String,
     pub port: u16,

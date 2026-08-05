@@ -67,13 +67,6 @@ pub enum AuthMethod {
     },
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct SshSession {
-    pub id: String,
-    pub config: SshConfig,
-    pub connected: bool,
-}
-
 pub struct SshClient {
     session: Option<Arc<client::Handle<Client>>>,
     /// Startup commands to inject after the interactive shell is ready.
@@ -84,7 +77,6 @@ pub struct SshClient {
 pub struct PtySession {
     pub input_tx: mpsc::Sender<Vec<u8>>,
     pub output_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<Vec<u8>>>>,
-    pub channel_id: ChannelId,
     /// Sender for resize requests (cols, rows) — forwarded to the SSH channel
     pub resize_tx: mpsc::Sender<(u32, u32)>,
     /// Cancellation token — cancelled when this session is torn down.
@@ -128,7 +120,6 @@ impl client::Handler for Client {
     }
 }
 
-
 /// Load a private key from inline PEM content or a filesystem path.
 pub fn load_private_key(
     key_path: Option<&str>,
@@ -170,9 +161,8 @@ pub fn load_private_key(
         ));
     }
 
-    let key_content = std::fs::read_to_string(&expanded_path).map_err(|e| {
-        anyhow::anyhow!("Failed to read SSH key file {}: {}", key_path, e)
-    })?;
+    let key_content = std::fs::read_to_string(&expanded_path)
+        .map_err(|e| anyhow::anyhow!("Failed to read SSH key file {}: {}", key_path, e))?;
     let key_content = key_content.replace("\r\n", "\n");
     decode_secret_key(&key_content, passphrase).map_err(|e| {
         if e.to_string().contains("encrypted") || e.to_string().contains("passphrase") {
@@ -190,7 +180,10 @@ pub fn load_private_key(
 
 impl SshClient {
     pub fn new() -> Self {
-        Self { session: None, startup_command: None }
+        Self {
+            session: None,
+            startup_command: None,
+        }
     }
 
     pub async fn connect(&mut self, config: &SshConfig) -> Result<()> {
@@ -228,7 +221,7 @@ impl SshClient {
         let mut ssh_session = tokio::time::timeout(connection_timeout, async {
             let stream = crate::proxy_stream::connect_tcp(&host, port, proxy.as_ref())
                 .await
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                .map_err(std::io::Error::other)?;
             client::connect_stream(ssh_config, stream, handler).await
         })
         .await
@@ -358,10 +351,6 @@ impl SshClient {
         Ok(())
     }
 
-    pub fn is_connected(&self) -> bool {
-        self.session.is_some()
-    }
-
     /// Create a persistent PTY shell session (like ttyd)
     /// This enables interactive commands like vim, less, more, top, etc.
     pub async fn create_pty_session(&self, cols: u32, rows: u32) -> Result<PtySession> {
@@ -391,31 +380,11 @@ impl SshClient {
             let (input_tx, mut input_rx) = mpsc::channel::<Vec<u8>>(1000); // Increased from 100
             let (output_tx, output_rx) = mpsc::channel::<Vec<u8>>(128); // Bounded: back-pressure to SSH window
 
-            let channel_id = channel.id();
-
             // Clone channel for input task
             let input_channel = channel.make_writer();
 
             // Create a channel for resize requests
             let (resize_tx, mut resize_rx) = mpsc::channel::<(u32, u32)>(16);
-
-            // Optional startup command (sent once shell is ready).
-            if let Some(cmd) = self.startup_command.clone() {
-                let cmd = cmd.trim().to_string();
-                if !cmd.is_empty() {
-                    let startup_tx = input_tx.clone();
-                    tokio::spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-                        let mut payload = cmd.replace("\r\n", "\n").replace('\r', "\n");
-                        if !payload.ends_with('\n') {
-                            payload.push('\n');
-                        }
-                        // SSH PTY expects CR as line terminator for most shells.
-                        let bytes = payload.replace('\n', "\r").into_bytes();
-                        let _ = startup_tx.send(bytes).await;
-                    });
-                }
-            }
 
             // Spawn task to handle input (frontend → SSH)
             // This is similar to ttyd's pty_write and INPUT command handling
@@ -437,16 +406,41 @@ impl SshClient {
                 }
             });
 
+            // Optional startup command. Injected the first time the shell produces
+            // output (a much more reliable "shell ready" signal than a fixed sleep:
+            // slow logins no longer race, fast shells don't wait the full delay).
+            let startup_bytes = self.startup_command.as_deref().and_then(|cmd| {
+                let cmd = cmd.trim();
+                if cmd.is_empty() {
+                    None
+                } else {
+                    let mut payload = cmd.replace("\r\n", "\n").replace('\r', "\n");
+                    if !payload.ends_with('\n') {
+                        payload.push('\n');
+                    }
+                    // SSH PTY expects CR as line terminator for most shells.
+                    Some(payload.replace('\n', "\r").into_bytes())
+                }
+            });
+            let startup_input_tx = input_tx.clone();
+
             // Spawn task to handle output (SSH → frontend) AND resize requests.
             // The channel must stay in this task because `wait()` requires `&mut self`,
             // but we also need `window_change()` which only requires `&self`.
             // We use `tokio::select!` to multiplex between output reading and resize.
             tokio::spawn(async move {
+                let mut pending_startup = startup_bytes;
                 loop {
                     tokio::select! {
                         msg = channel.wait() => {
                             match msg {
                                 Some(ChannelMsg::Data { data }) => {
+                                    // First shell output: inject the startup command now.
+                                    if let Some(bytes) = pending_startup.take() {
+                                        if startup_input_tx.send(bytes).await.is_err() {
+                                            break;
+                                        }
+                                    }
                                     if output_tx.send(data.to_vec()).await.is_err() {
                                         break;
                                     }
@@ -489,7 +483,6 @@ impl SshClient {
             Ok(PtySession {
                 input_tx,
                 output_rx: Arc::new(tokio::sync::Mutex::new(output_rx)),
-                channel_id,
                 resize_tx,
                 cancel: CancellationToken::new(),
             })
@@ -498,7 +491,20 @@ impl SshClient {
         }
     }
 
-    pub async fn download_file(&self, remote_path: &str, local_path: &str) -> Result<u64> {
+    /// Download a remote file to a local path, streaming chunk-by-chunk so
+    /// memory use stays bounded for large files. `on_progress(bytes_so_far)`
+    /// is invoked after every chunk; returning `false` aborts the transfer.
+    /// The `cancel` token is polled so an in-flight transfer stops promptly.
+    pub async fn download_file_progress<F>(
+        &self,
+        remote_path: &str,
+        local_path: &str,
+        cancel: &CancellationToken,
+        on_progress: &mut F,
+    ) -> Result<u64>
+    where
+        F: FnMut(u64) -> bool + Send,
+    {
         if let Some(session) = &self.session {
             // Open SFTP subsystem
             let channel = session.channel_open_session().await?;
@@ -507,28 +513,47 @@ impl SshClient {
 
             // Open remote file for reading
             let mut remote_file = sftp.open(remote_path).await?;
+            let mut local_file = tokio::fs::File::create(local_path).await?;
 
-            // Read file content
-            let mut buffer = Vec::new();
-            let mut temp_buf = vec![0u8; 8192];
+            let mut temp_buf = vec![0u8; 32768];
             let mut total_bytes = 0u64;
 
             loop {
-                let n = remote_file.read(&mut temp_buf).await?;
-                if n == 0 {
-                    break;
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => {
+                        let _ = local_file.flush().await;
+                        return Err(anyhow::anyhow!("Transfer cancelled"));
+                    }
+                    result = remote_file.read(&mut temp_buf) => {
+                        let n = result?;
+                        if n == 0 {
+                            break;
+                        }
+                        local_file.write_all(&temp_buf[..n]).await?;
+                        total_bytes += n as u64;
+                        if !on_progress(total_bytes) {
+                            let _ = local_file.flush().await;
+                            return Err(anyhow::anyhow!("Transfer cancelled"));
+                        }
+                    }
                 }
-                buffer.extend_from_slice(&temp_buf[..n]);
-                total_bytes += n as u64;
             }
 
-            // Write to local file
-            tokio::fs::write(local_path, buffer).await?;
-
+            local_file.flush().await?;
             Ok(total_bytes)
         } else {
             Err(anyhow::anyhow!("Not connected"))
         }
+    }
+
+    /// Backward-compatible download (whole-file buffering) for callers that
+    /// don't need progress or cancellation.
+    pub async fn download_file(&self, remote_path: &str, local_path: &str) -> Result<u64> {
+        let cancel = CancellationToken::new();
+        let mut noop = |_: u64| true;
+        self.download_file_progress(remote_path, local_path, &cancel, &mut noop)
+            .await
     }
 
     pub async fn download_file_to_memory(&self, remote_path: &str) -> Result<Vec<u8>> {
@@ -559,11 +584,22 @@ impl SshClient {
         }
     }
 
-    pub async fn upload_file(&self, local_path: &str, remote_path: &str) -> Result<u64> {
+    /// Upload a local file to a remote path, streaming chunk-by-chunk so
+    /// memory use stays bounded for large files. `on_progress(bytes_sent)` is
+    /// invoked after every chunk; returning `false` aborts the transfer.
+    /// The `cancel` token is polled so an in-flight transfer stops promptly.
+    pub async fn upload_file_progress<F>(
+        &self,
+        local_path: &str,
+        remote_path: &str,
+        cancel: &CancellationToken,
+        on_progress: &mut F,
+    ) -> Result<u64>
+    where
+        F: FnMut(u64) -> bool + Send,
+    {
         if let Some(session) = &self.session {
-            // Read local file
-            let data = tokio::fs::read(local_path).await?;
-            let total_bytes = data.len() as u64;
+            let mut local_file = tokio::fs::File::open(local_path).await?;
 
             // Open SFTP subsystem
             let channel = session.channel_open_session().await?;
@@ -574,21 +610,43 @@ impl SshClient {
             let mut remote_file = sftp.create(remote_path).await?;
 
             // Write data in chunks
-            let mut offset = 0;
-            let chunk_size = 8192;
+            let mut buf = vec![0u8; 32768];
+            let mut sent = 0u64;
 
-            while offset < data.len() {
-                let end = std::cmp::min(offset + chunk_size, data.len());
-                remote_file.write_all(&data[offset..end]).await?;
-                offset = end;
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => {
+                        return Err(anyhow::anyhow!("Transfer cancelled"));
+                    }
+                    result = local_file.read(&mut buf) => {
+                        let n = result?;
+                        if n == 0 {
+                            break;
+                        }
+                        remote_file.write_all(&buf[..n]).await?;
+                        sent += n as u64;
+                        if !on_progress(sent) {
+                            return Err(anyhow::anyhow!("Transfer cancelled"));
+                        }
+                    }
+                }
             }
 
             remote_file.flush().await?;
-
-            Ok(total_bytes)
+            Ok(sent)
         } else {
             Err(anyhow::anyhow!("Not connected"))
         }
+    }
+
+    /// Backward-compatible upload (whole-file buffering) for callers that
+    /// don't need progress or cancellation.
+    pub async fn upload_file(&self, local_path: &str, remote_path: &str) -> Result<u64> {
+        let cancel = CancellationToken::new();
+        let mut noop = |_: u64| true;
+        self.upload_file_progress(local_path, remote_path, &cancel, &mut noop)
+            .await
     }
 
     pub async fn upload_file_from_bytes(&self, data: &[u8], remote_path: &str) -> Result<u64> {

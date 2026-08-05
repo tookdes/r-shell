@@ -3,10 +3,9 @@ use crate::ftp_client::FtpConfig;
 use crate::os_detect::{self, OsInfo};
 use crate::sftp_client::{FileEntry, FileEntryType, SftpAuthMethod, SftpConfig};
 use crate::ssh::{AuthMethod, SshConfig};
-use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tauri::State;
+use tauri::{Emitter, State};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ConnectRequest {
@@ -361,9 +360,9 @@ pub async fn get_system_stats(
     // Disk stats for root filesystem
     let disk_cmd = os_info.disk_cmd();
     let disk_output = client.execute_command(disk_cmd).await.unwrap_or_default();
-    let disk_parts: Vec<&str> = disk_output.trim().split_whitespace().collect();
+    let disk_parts: Vec<&str> = disk_output.split_whitespace().collect();
     let disk = DiskStats {
-        total: disk_parts.get(0).unwrap_or(&"0").to_string(),
+        total: disk_parts.first().unwrap_or(&"0").to_string(),
         used: disk_parts.get(1).unwrap_or(&"0").to_string(),
         available: disk_parts.get(2).unwrap_or(&"0").to_string(),
         use_percent: disk_parts
@@ -532,6 +531,47 @@ pub async fn sftp_upload_file(
 
 // File operation commands
 
+/// Progress event payload emitted while a file transfer is in flight.
+/// The frontend matches events by `connection_id` + optional `transfer_id`.
+#[derive(Debug, Clone, Serialize)]
+pub struct TransferProgressPayload {
+    pub connection_id: String,
+    pub transfer_id: Option<String>,
+    pub bytes: u64,
+}
+
+/// Emit a transfer-progress event (best-effort; the frontend may be gone).
+fn emit_transfer_progress(
+    app: &tauri::AppHandle,
+    connection_id: &str,
+    transfer_id: Option<&str>,
+    bytes: u64,
+) {
+    let _ = app.emit(
+        "transfer-progress",
+        TransferProgressPayload {
+            connection_id: connection_id.to_string(),
+            transfer_id: transfer_id.map(str::to_string),
+            bytes,
+        },
+    );
+}
+
+/// Refuse destructive/rename/copy operations on root or empty remote paths.
+fn ensure_safe_remote_path(path: &str) -> Result<(), String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty()
+        || trimmed == "/"
+        || trimmed == "\\"
+        || trimmed == "~"
+        || trimmed == "."
+        || trimmed == ".."
+    {
+        return Err(format!("Refusing to operate on unsafe path: '{}'", trimmed));
+    }
+    Ok(())
+}
+
 /// Escape a path for use inside a POSIX single-quoted shell argument.
 /// Single quotes cannot appear inside a single-quoted string, so we end the
 /// quote, emit the escaped quote, and reopen the quote: `'` → `'\''`.
@@ -545,6 +585,7 @@ pub async fn create_directory(
     path: String,
     state: State<'_, Arc<ConnectionManager>>,
 ) -> Result<bool, String> {
+    ensure_safe_remote_path(&path)?;
     let connection = state
         .get_connection(&connection_id)
         .await
@@ -566,6 +607,7 @@ pub async fn delete_file(
     is_directory: bool,
     state: State<'_, Arc<ConnectionManager>>,
 ) -> Result<bool, String> {
+    ensure_safe_remote_path(&path)?;
     let connection = state
         .get_connection(&connection_id)
         .await
@@ -591,13 +633,19 @@ pub async fn rename_file(
     new_path: String,
     state: State<'_, Arc<ConnectionManager>>,
 ) -> Result<bool, String> {
+    ensure_safe_remote_path(&old_path)?;
+    ensure_safe_remote_path(&new_path)?;
     let connection = state
         .get_connection(&connection_id)
         .await
         .ok_or("Connection not found")?;
 
     let client = connection.read().await;
-    let command = format!("mv '{}' '{}'", shell_escape_single_quoted(&old_path), shell_escape_single_quoted(&new_path));
+    let command = format!(
+        "mv '{}' '{}'",
+        shell_escape_single_quoted(&old_path),
+        shell_escape_single_quoted(&new_path)
+    );
 
     match client.execute_command(&command).await {
         Ok(_) => Ok(true),
@@ -674,7 +722,10 @@ pub async fn read_remote_file_base64(
 
     // Refuse very large files to avoid memory / performance issues
     let escaped_path = shell_escape_single_quoted(&path);
-    let size_cmd = format!("stat -c '%s' '{}' 2>/dev/null || stat -f '%z' '{}'", escaped_path, escaped_path);
+    let size_cmd = format!(
+        "stat -c '%s' '{}' 2>/dev/null || stat -f '%z' '{}'",
+        escaped_path, escaped_path
+    );
     let size_str = client
         .execute_command(&size_cmd)
         .await
@@ -702,11 +753,7 @@ pub async fn read_remote_file_base64(
         .map_err(|e| e.to_string())?;
 
     // Infer MIME type from extension
-    let ext = path
-        .rsplit('.')
-        .next()
-        .unwrap_or("")
-        .to_lowercase();
+    let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
     let mime = match ext.as_str() {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
@@ -734,13 +781,19 @@ pub async fn copy_file(
     dest_path: String,
     state: State<'_, Arc<ConnectionManager>>,
 ) -> Result<bool, String> {
+    ensure_safe_remote_path(&source_path)?;
+    ensure_safe_remote_path(&dest_path)?;
     let connection = state
         .get_connection(&connection_id)
         .await
         .ok_or("Connection not found")?;
 
     let client = connection.read().await;
-    let command = format!("cp -r '{}' '{}'", shell_escape_single_quoted(&source_path), shell_escape_single_quoted(&dest_path));
+    let command = format!(
+        "cp -r '{}' '{}'",
+        shell_escape_single_quoted(&source_path),
+        shell_escape_single_quoted(&dest_path)
+    );
 
     match client.execute_command(&command).await {
         Ok(_) => Ok(true),
@@ -857,6 +910,7 @@ pub async fn list_connections(
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(dead_code)] // Deserialized from frontend JSON for the tail_log command.
 pub struct TailLogRequest {
     pub connection_id: String,
     pub log_path: String,
@@ -1558,6 +1612,7 @@ pub async fn get_disk_usage(
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(dead_code)] // Deserialized from frontend JSON for the ssh_tab_complete command.
 pub struct TabCompletionRequest {
     pub connection_id: String,
     pub input: String,
@@ -2383,9 +2438,20 @@ pub async fn download_remote_file(
     connection_id: String,
     remote_path: String,
     local_path: String,
+    transfer_id: Option<String>,
+    app: tauri::AppHandle,
     state: State<'_, Arc<ConnectionManager>>,
 ) -> Result<FileTransferResponse, String> {
+    let cancel = state.transfer_token(&connection_id).await;
     let conn_type = state.get_connection_type(&connection_id).await;
+
+    let mut on_progress = |bytes: u64| {
+        if cancel.is_cancelled() {
+            return false;
+        }
+        emit_transfer_progress(&app, &connection_id, transfer_id.as_deref(), bytes);
+        !cancel.is_cancelled()
+    };
 
     let result = match conn_type.as_deref() {
         Some("SFTP") => {
@@ -2394,7 +2460,9 @@ pub async fn download_remote_file(
             let client = connections
                 .get(&connection_id)
                 .ok_or("SFTP connection not found".to_string())?;
-            client.download_file(&remote_path, &local_path).await
+            client
+                .download_file_progress(&remote_path, &local_path, &cancel, &mut on_progress)
+                .await
         }
         Some("FTP") => {
             let ftp_map = state.get_ftp_connection().await;
@@ -2402,7 +2470,9 @@ pub async fn download_remote_file(
             let client = connections
                 .get_mut(&connection_id)
                 .ok_or("FTP connection not found".to_string())?;
-            client.download_file(&remote_path, &local_path).await
+            client
+                .download_file_progress(&remote_path, &local_path, &cancel, &mut on_progress)
+                .await
         }
         Some(other) => return Err(format!("Unsupported protocol: {}", other)),
         None => {
@@ -2413,7 +2483,9 @@ pub async fn download_remote_file(
                 .await
                 .ok_or_else(|| format!("No connection found for '{}'", connection_id))?;
             let client = connection.read().await;
-            client.download_file(&remote_path, &local_path).await
+            client
+                .download_file_progress(&remote_path, &local_path, &cancel, &mut on_progress)
+                .await
         }
     };
 
@@ -2438,9 +2510,20 @@ pub async fn upload_remote_file(
     connection_id: String,
     local_path: String,
     remote_path: String,
+    transfer_id: Option<String>,
+    app: tauri::AppHandle,
     state: State<'_, Arc<ConnectionManager>>,
 ) -> Result<FileTransferResponse, String> {
+    let cancel = state.transfer_token(&connection_id).await;
     let conn_type = state.get_connection_type(&connection_id).await;
+
+    let mut on_progress = |bytes: u64| {
+        if cancel.is_cancelled() {
+            return false;
+        }
+        emit_transfer_progress(&app, &connection_id, transfer_id.as_deref(), bytes);
+        !cancel.is_cancelled()
+    };
 
     let result = match conn_type.as_deref() {
         Some("SFTP") => {
@@ -2449,7 +2532,9 @@ pub async fn upload_remote_file(
             let client = connections
                 .get(&connection_id)
                 .ok_or("SFTP connection not found".to_string())?;
-            client.upload_file(&local_path, &remote_path).await
+            client
+                .upload_file_progress(&local_path, &remote_path, &cancel, &mut on_progress)
+                .await
         }
         Some("FTP") => {
             let ftp_map = state.get_ftp_connection().await;
@@ -2457,7 +2542,9 @@ pub async fn upload_remote_file(
             let client = connections
                 .get_mut(&connection_id)
                 .ok_or("FTP connection not found".to_string())?;
-            client.upload_file(&local_path, &remote_path).await
+            client
+                .upload_file_progress(&local_path, &remote_path, &cancel, &mut on_progress)
+                .await
         }
         Some(other) => return Err(format!("Unsupported protocol: {}", other)),
         None => {
@@ -2468,7 +2555,9 @@ pub async fn upload_remote_file(
                 .await
                 .ok_or_else(|| format!("No connection found for '{}'", connection_id))?;
             let client = connection.read().await;
-            client.upload_file(&local_path, &remote_path).await
+            client
+                .upload_file_progress(&local_path, &remote_path, &cancel, &mut on_progress)
+                .await
         }
     };
 
@@ -3424,7 +3513,6 @@ mod local_fs_tests {
         assert_eq!(s, "2024-01-01 00:00:00");
     }
 }
-
 
 // ========== Host key / secrets / known_hosts ==========
 

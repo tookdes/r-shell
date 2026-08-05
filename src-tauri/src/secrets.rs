@@ -85,16 +85,3 @@ pub fn decrypt_string(blob_b64: &str) -> Result<String, String> {
         .map_err(|_| "decrypt failed (wrong key or corrupted data)".to_string())?;
     String::from_utf8(plain).map_err(|e| format!("utf8: {e}"))
 }
-
-/// True when the string looks like one of our base64 ciphertext blobs.
-pub fn looks_encrypted(value: &str) -> bool {
-    let trimmed = value.trim();
-    if trimmed.len() < 24 {
-        return false;
-    }
-    // Heuristic: valid base64 and decodes to at least nonce+tag.
-    if let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(trimmed) {
-        return raw.len() >= NONCE_LEN + 16;
-    }
-    false
-}
