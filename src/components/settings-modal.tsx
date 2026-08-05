@@ -321,7 +321,7 @@ export function SettingsModal({ open, onOpenChange, onAppearanceChange, onCheckF
   const scrollToActiveTab = useCallback(() => {
     const el = tabListRef.current;
     if (!el) return;
-    const activeTrigger = el.querySelector('[data-state="active"]') as HTMLElement | null;
+    const activeTrigger = el.querySelector('[data-state="active"]');
     if (!activeTrigger) return;
     activeTrigger.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
   }, []);

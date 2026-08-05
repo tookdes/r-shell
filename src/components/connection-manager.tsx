@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronRight, ChevronDown, Folder, FolderOpen, Monitor, Server, HardDrive, Plus, Pencil, Copy, Trash2, FolderPlus, FolderEdit, Zap, Clock, ArrowDownAZ, GripVertical } from 'lucide-react';
+import { ChevronRight, ChevronDown, Folder, FolderOpen, Monitor, Server, HardDrive, Plus, Pencil, Copy, Trash2, FolderPlus, FolderEdit, Zap, Clock } from 'lucide-react';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Separator } from './ui/separator';
@@ -43,16 +43,6 @@ import {
 } from './ui/context-menu';
 import { toast } from 'sonner';
 
-/** Pointer-based tree drag (HTML5 DnD is unreliable in Tauri WebView2). */
-type ActiveTreeDrag = {
-  id: string;
-  type: 'connection' | 'folder';
-  name: string;
-  path?: string;
-};
-
-let activeTreeDrag: ActiveTreeDrag | null = null;
-
 interface ConnectionNode {
   id: string;
   name: string;
@@ -81,6 +71,9 @@ interface ConnectionManagerProps {
   recentConnections?: { id: string; name: string; host: string; username: string; port?: number; lastConnected?: string }[];
   onQuickConnect?: (connectionId: string) => void;
 }
+
+type DropPosition = 'before' | 'after' | 'inside';
+const ROOT_DROP_ID = '__root__';
 
 export function ConnectionManager({
   onConnectionSelect,
@@ -113,10 +106,12 @@ export function ConnectionManager({
   const [folderToRename, setFolderToRename] = useState<{ path: string; name: string; parentPath?: string } | null>(null);
   const [renameFolderNewName, setRenameFolderNewName] = useState('');
 
-  // Pointer-based drag state (module-level activeTreeDrag + local visuals)
-  const [draggingId, setDraggingId] = useState<string | null>(null);
-  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
-  const [dragGhost, setDragGhost] = useState<{ x: number; y: number; name: string } | null>(null);
+  // Drag and drop state (pointer-based — HTML5 DnD is unusable in WKWebView)
+  const [draggedItem, setDraggedItem] = useState<{ node: ConnectionNode; type: 'connection' | 'folder' } | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ nodeId: string; position: DropPosition } | null>(null);
+  const [dragGhost, setDragGhost] = useState<{ x: number; y: number; name: string; type: 'connection' | 'folder' } | null>(null);
+  const suppressClickRef = useRef(false);
+  const treeContainerRef = useRef<HTMLDivElement>(null);
 
   // Reload connections when active connections change
   useEffect(() => {
@@ -281,177 +276,280 @@ export function ConnectionManager({
     setDeleteFolderDialogOpen(true);
   };
 
-  // Drag and drop handlers (pointer-based — works in WebView2)
-  const isNodeDraggable = (node: ConnectionNode): boolean => {
-    if (node.type === 'connection') {
+  // ── Pointer-based drag and drop (HTML5 DnD does not fire drop events in WKWebView) ──
+
+  // Find a node's context in the tree: its parent path and same-type siblings
+  const findNodeContext = (
+    nodes: ConnectionNode[],
+    nodeId: string,
+    parentPath?: string
+  ): { parentPath: string | undefined; sameTypeSiblings: ConnectionNode[] } | null => {
+    const idx = nodes.findIndex(n => n.id === nodeId);
+    if (idx !== -1) {
+      return {
+        parentPath,
+        sameTypeSiblings: nodes.filter(n => n.type === nodes[idx].type),
+      };
+    }
+    for (const n of nodes) {
+      if (n.children) {
+        const found = findNodeContext(n.children, nodeId, n.path);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+
+  // Find a node by id in the tree
+  const findNodeById = (nodes: ConnectionNode[], id: string): ConnectionNode | null => {
+    for (const n of nodes) {
+      if (n.id === id) return n;
+      if (n.children) {
+        const found = findNodeById(n.children, id);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+
+  // Guard: dropping a folder into its own subtree is invalid
+  const isInvalidFolderTarget = (draggedNode: ConnectionNode, targetNode: ConnectionNode): boolean => {
+    if (draggedNode.type !== 'folder') return false;
+    const draggedPath = draggedNode.path!;
+    if (targetNode.type === 'folder' && (targetNode.path === draggedPath || targetNode.path?.startsWith(draggedPath + '/'))) {
       return true;
     }
-    return Boolean(node.path && node.path !== 'All Connections');
+    if (targetNode.type === 'connection') {
+      const ctx = findNodeContext(connections, targetNode.id);
+      const connParent = ctx?.parentPath ?? 'All Connections';
+      if (connParent === draggedPath || connParent.startsWith(draggedPath + '/')) return true;
+    }
+    return false;
   };
 
-  const applyTreeDrop = (
-    drag: ActiveTreeDrag,
-    target: { id: string; type: 'connection' | 'folder'; path?: string },
-  ) => {
-    if (drag.id === target.id) {
-      return;
+  // Compute before/after/inside from pointer Y within a row
+  const calcDropPosition = (targetNode: ConnectionNode, rowEl: HTMLElement, clientY: number): DropPosition => {
+    if (targetNode.path === 'All Connections') return 'inside'; // root only accepts inside
+    const rect = rowEl.getBoundingClientRect();
+    const ratio = (clientY - rect.top) / rect.height;
+    if (targetNode.type === 'folder') {
+      return ratio < 0.25 ? 'before' : ratio > 0.75 ? 'after' : 'inside';
     }
+    return ratio < 0.5 ? 'before' : 'after';
+  };
 
-    if (drag.type === 'connection') {
-      if (target.type === 'folder') {
-        if (!target.path) {
-          toast.error(t('connectionManager.failedToMoveConnection'));
-          return;
-        }
-        if (ConnectionStorageManager.placeConnection(drag.id, target.path, null)) {
-          setConnections(loadConnections());
-          toast.success(
-            t('connectionManager.movedConnection', {
-              source: drag.name,
-              target: target.path.split('/').pop() || target.path,
-            }),
-          );
-        } else {
-          toast.error(t('connectionManager.failedToMoveConnection'));
-        }
+  // Hit-test the element stack for a connection tree row
+  const findRowAtPoint = (x: number, y: number): HTMLElement | null => {
+    for (const el of document.elementsFromPoint(x, y)) {
+      if (el.hasAttribute('data-conn-node-id')) return el as HTMLElement;
+    }
+    return null;
+  };
+
+  const isOverTreeContainer = (x: number, y: number): boolean => {
+    for (const el of document.elementsFromPoint(x, y)) {
+      if (el.hasAttribute('data-conn-tree-container')) return true;
+    }
+    return false;
+  };
+
+  // Update drop indicator from pointer position during drag
+  const updateDropTargetFromPoint = (x: number, y: number, draggedNode: ConnectionNode) => {
+    const rowEl = findRowAtPoint(x, y);
+    if (rowEl) {
+      const targetId = rowEl.getAttribute('data-conn-node-id')!;
+      if (targetId === draggedNode.id) {
+        setDropTarget(null);
         return;
       }
-
-      const targetConnection = ConnectionStorageManager.getConnection(target.id);
-      const targetFolderPath = targetConnection?.folder || 'All Connections';
-      const sourceConnection = ConnectionStorageManager.getConnection(drag.id);
-      const sourceFolderPath = sourceConnection?.folder || 'All Connections';
-
-      if (ConnectionStorageManager.placeConnection(drag.id, targetFolderPath, target.id)) {
-        setConnections(loadConnections());
-        if (sourceFolderPath === targetFolderPath) {
-          toast.success(t('connectionManager.reorderedConnection', { name: drag.name }));
-        } else {
-          toast.success(
-            t('connectionManager.movedConnection', {
-              source: drag.name,
-              target: targetFolderPath.split('/').pop() || targetFolderPath,
-            }),
-          );
-        }
-      } else {
-        toast.error(t('connectionManager.failedToMoveConnection'));
+      const targetNode = findNodeById(connections, targetId);
+      if (!targetNode || isInvalidFolderTarget(draggedNode, targetNode)) {
+        setDropTarget(null);
+        return;
       }
-      return;
-    }
-
-    // folder -> folder
-    if (target.type !== 'folder' || !target.path || !drag.path) {
-      return;
-    }
-    if (target.path === drag.path || target.path.startsWith(drag.path + '/')) {
-      toast.error(t('connectionManager.cannotMoveIntoOwn'));
-      return;
-    }
-    if (ConnectionStorageManager.moveFolder(drag.path, target.path)) {
-      setConnections(loadConnections());
-      toast.success(
-        t('connectionManager.movedFolder', {
-          source: drag.name,
-          target: target.path.split('/').pop() || target.path,
-        }),
+      const position = calcDropPosition(targetNode, rowEl, y);
+      setDropTarget(prev =>
+        prev?.nodeId === targetId && prev.position === position ? prev : { nodeId: targetId, position }
       );
-    } else {
-      toast.error(t('connectionManager.failedToMoveFolder'));
+      return;
+    }
+    // Empty space inside the tree container → drop to root
+    if (isOverTreeContainer(x, y)) {
+      setDropTarget(prev =>
+        prev?.nodeId === ROOT_DROP_ID ? prev : { nodeId: ROOT_DROP_ID, position: 'inside' }
+      );
+      return;
+    }
+    setDropTarget(null);
+  };
+
+  // Execute the drop at the pointer position
+  const performDropAtPoint = (x: number, y: number, draggedNode: ConnectionNode) => {
+    const rowEl = findRowAtPoint(x, y);
+    if (rowEl) {
+      const targetId = rowEl.getAttribute('data-conn-node-id')!;
+      if (targetId === draggedNode.id) return;
+      const targetNode = findNodeById(connections, targetId);
+      if (!targetNode) return;
+      const position = calcDropPosition(targetNode, rowEl, y);
+      executeDrop(draggedNode, targetNode, position);
+    } else if (isOverTreeContainer(x, y)) {
+      executeDrop(draggedNode, undefined, 'inside');
     }
   };
 
-  const handleGripPointerDown = (event: React.PointerEvent, node: ConnectionNode) => {
-    if (event.button !== 0 || !isNodeDraggable(node)) {
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
+  const handleNodePointerDown = (e: React.PointerEvent, node: ConnectionNode) => {
+    if (e.button !== 0) return; // left button only
+    if (node.path === 'All Connections') return; // root folder is not draggable
 
-    const startX = event.clientX;
-    const startY = event.clientY;
+    const startX = e.clientX;
+    const startY = e.clientY;
     let dragging = false;
-    const DRAG_THRESHOLD_PX = 4;
-
-    const clearDragChrome = () => {
-      document.body.style.userSelect = '';
-      document.body.style.cursor = '';
-      setDraggingId(null);
-      setDropTargetId(null);
-      setDragGhost(null);
-    };
+    const DRAG_THRESHOLD = 5;
 
     const onMove = (ev: PointerEvent) => {
-      const distance = Math.abs(ev.clientX - startX) + Math.abs(ev.clientY - startY);
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+
       if (!dragging) {
-        if (distance < DRAG_THRESHOLD_PX) {
-          return;
-        }
+        if (Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) return;
         dragging = true;
-        activeTreeDrag = {
-          id: node.id,
-          type: node.type,
-          name: node.name,
-          path: node.path,
-        };
+        suppressClickRef.current = true;
+        setDraggedItem({ node, type: node.type });
         document.body.style.userSelect = 'none';
-        document.body.style.cursor = 'grabbing';
-        setDraggingId(node.id);
       }
 
-      setDragGhost({ x: ev.clientX, y: ev.clientY, name: node.name });
+      setDragGhost({ x: ev.clientX, y: ev.clientY, name: node.name, type: node.type });
+      updateDropTargetFromPoint(ev.clientX, ev.clientY, node);
 
-      const hit = document.elementFromPoint(ev.clientX, ev.clientY);
-      const dropHost = hit?.closest('[data-connection-drop-id]') as HTMLElement | null;
-      const targetId = dropHost?.getAttribute('data-connection-drop-id');
-      if (targetId && targetId !== node.id) {
-        setDropTargetId(targetId);
-      } else {
-        setDropTargetId(null);
+      // Auto-scroll the tree near vertical edges
+      const container = treeContainerRef.current;
+      if (container) {
+        const rect = container.getBoundingClientRect();
+        const EDGE = 40;
+        const SPEED = 10;
+        if (ev.clientY < rect.top + EDGE) {
+          container.scrollTop -= SPEED;
+        } else if (ev.clientY > rect.bottom - EDGE) {
+          container.scrollTop += SPEED;
+        }
       }
     };
 
-    const onUp = (ev: PointerEvent) => {
+    const onUp = (ev: PointerEvent | FocusEvent) => {
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', onUp);
       document.removeEventListener('pointercancel', onUp);
+      window.removeEventListener('blur', onUp);
+      document.body.style.userSelect = '';
 
-      if (dragging && activeTreeDrag) {
-        const hit = document.elementFromPoint(ev.clientX, ev.clientY);
-        const dropHost = hit?.closest('[data-connection-drop-id]') as HTMLElement | null;
-        if (dropHost) {
-          const targetId = dropHost.getAttribute('data-connection-drop-id') || '';
-          const targetTypeAttr = dropHost.getAttribute('data-connection-drop-type');
-          const targetPath = dropHost.getAttribute('data-connection-drop-path') || undefined;
-          const targetType =
-            targetTypeAttr === 'folder' || targetTypeAttr === 'connection'
-              ? targetTypeAttr
-              : null;
-          if (targetId && targetType) {
-            applyTreeDrop(activeTreeDrag, {
-              id: targetId,
-              type: targetType,
-              path: targetPath || undefined,
-            });
-          }
+      if (dragging) {
+        const clientX = 'clientX' in ev ? ev.clientX : 0;
+        const clientY = 'clientY' in ev ? ev.clientY : 0;
+        if (clientX || clientY) {
+          performDropAtPoint(clientX, clientY, node);
         }
       }
 
-      activeTreeDrag = null;
-      clearDragChrome();
+      setDraggedItem(null);
+      setDropTarget(null);
+      setDragGhost(null);
+      // Release click suppression after the synthetic click has fired
+      setTimeout(() => { suppressClickRef.current = false; }, 0);
     };
 
     document.addEventListener('pointermove', onMove);
     document.addEventListener('pointerup', onUp);
     document.addEventListener('pointercancel', onUp);
+    window.addEventListener('blur', onUp);
   };
 
-  const handleSortFolderByName = (folderPath: string, folderName: string) => {
-    if (ConnectionStorageManager.sortConnectionsInFolderByName(folderPath)) {
-      setConnections(loadConnections());
-      toast.success(t('connectionManager.sortedFolderByName', { name: folderName }));
+  const executeDrop = (draggedNode: ConnectionNode, targetNode?: ConnectionNode, position: DropPosition = 'inside') => {
+    // Connections never accept 'inside' drops
+    if (targetNode?.type === 'connection' && position === 'inside') {
+      position = 'after';
+    }
+
+    // Resolve target parent path and insertion index among same-type siblings
+    let targetParentPath: string | undefined;
+    let newIndex: number;
+
+    if (!targetNode) {
+      // Dropped on empty container space → move into 'All Connections' at end
+      targetParentPath = 'All Connections';
+      const rootNode = connections.find(n => n.path === 'All Connections');
+      newIndex = rootNode?.children?.filter(c => c.type === draggedNode.type).length ?? 0;
+    } else if (position === 'inside') {
+      // Dropped into a folder
+      targetParentPath = targetNode.path!;
+      newIndex = targetNode.children?.filter(c => c.type === draggedNode.type).length ?? 0;
     } else {
-      toast.error(t('connectionManager.failedToSortFolder'));
+      // Dropped before/after a sibling node
+      const ctx = findNodeContext(connections, targetNode.id);
+      if (!ctx) return;
+      targetParentPath = ctx.parentPath;
+      const siblingsWithoutDragged = ctx.sameTypeSiblings.filter(s => s.id !== draggedNode.id);
+      const targetIndexInFiltered = siblingsWithoutDragged.findIndex(s => s.id === targetNode.id);
+      newIndex = position === 'before' ? targetIndexInFiltered : targetIndexInFiltered + 1;
+    }
+
+    // Guard: cannot move a folder into its own subtree
+    if (draggedNode.type === 'folder' && targetParentPath !== undefined) {
+      const draggedPath = draggedNode.path!;
+      if (targetParentPath === draggedPath || targetParentPath.startsWith(draggedPath + '/')) {
+        toast.error(t('connectionManager.cannotMoveIntoOwn'));
+        return;
+      }
+    }
+
+    // Skip no-op drops (same parent, same position)
+    const draggedCtx = findNodeContext(connections, draggedNode.id);
+    if (draggedCtx) {
+      const currentParent = draggedCtx.parentPath ?? 'All Connections';
+      const resolvedTarget = targetParentPath ?? 'All Connections';
+      if (currentParent === resolvedTarget) {
+        const currentIndex = draggedCtx.sameTypeSiblings.findIndex(s => s.id === draggedNode.id);
+        if (currentIndex === newIndex) {
+          return;
+        }
+      }
+    }
+
+    const sourceParentPath = draggedNode.type === 'connection'
+      ? (ConnectionStorageManager.getConnection(draggedNode.id)?.folder || 'All Connections')
+      : ConnectionStorageManager.getFolders().find(f => f.id === draggedNode.id)?.parentPath;
+
+    let success: boolean;
+    if (draggedNode.type === 'connection') {
+      success = ConnectionStorageManager.reorderItem(draggedNode.id, 'connection', targetParentPath, newIndex);
+    } else {
+      // Move folder recursively (rewrites all nested paths), then set position
+      success = ConnectionStorageManager.moveFolderRecursive(draggedNode.path!, targetParentPath);
+      if (success) {
+        success = ConnectionStorageManager.reorderItem(draggedNode.id, 'folder', targetParentPath, newIndex);
+      }
+    }
+
+    if (success) {
+      setConnections(loadConnections());
+      // Only show a toast when the item changed parent folder
+      const resolvedTargetParent = targetParentPath ?? 'All Connections';
+      if (sourceParentPath !== targetParentPath) {
+        if (resolvedTargetParent === 'All Connections') {
+          toast.success(t('connectionManager.movedToRoot', { name: draggedNode.name }));
+        } else {
+          const targetName = position === 'inside' && targetNode
+            ? targetNode.name
+            : targetParentPath?.split('/').pop() ?? 'All Connections';
+          if (draggedNode.type === 'connection') {
+            toast.success(t('connectionManager.movedConnection', { source: draggedNode.name, target: targetName }));
+          } else {
+            toast.success(t('connectionManager.movedFolder', { source: draggedNode.name, target: targetName }));
+          }
+        }
+      }
+    } else {
+      toast.error(t('connectionManager.failedToReorder'));
     }
   };
 
@@ -508,9 +606,15 @@ export function ConnectionManager({
   const renderNode = (node: ConnectionNode, level: number = 0) => {
     const isSelected = selectedConnectionId === node.id;
     const isConnected = node.type === 'connection' && node.isConnected;
-    const isDragging = draggingId === node.id;
+    const isDragging = draggedItem?.node.id === node.id;
+    const isDropBefore = dropTarget?.nodeId === node.id && dropTarget.position === 'before';
+    const isDropAfter = dropTarget?.nodeId === node.id && dropTarget.position === 'after';
+    const isDropInside = dropTarget?.nodeId === node.id && dropTarget.position === 'inside';
 
     const handleNodeClick = () => {
+      // Suppress the synthetic click that follows a completed drag
+      if (suppressClickRef.current) return;
+
       // Always select the node first
       onConnectionSelect(node);
 
@@ -531,33 +635,27 @@ export function ConnectionManager({
       }
     };
 
-    // IMPORTANT (WebView2 / Tauri):
-    // Never put `draggable` on the same node as Radix ContextMenuTrigger.
-    // Trigger intercepts pointer events and HTML5 drag never starts reliably.
-    // Drag starts only from the dedicated grip handle OUTSIDE the menu trigger.
-    const canDrag = isNodeDraggable(node);
-
-    const rowBody = (
+    const nodeContent = (
       <div
-        className={`flex items-center gap-2 px-2 py-1 hover:bg-accent cursor-pointer select-none flex-1 min-w-0 ${
+        data-conn-node-id={node.id}
+        className={`relative flex items-center gap-2 px-2 py-1 hover:bg-accent cursor-pointer select-none ${
           isSelected ? 'bg-accent' : ''
-        }`}
+        } ${isDragging ? 'opacity-50' : ''} ${isDropInside ? 'bg-accent/60 ring-1 ring-primary/50 rounded-sm' : ''}`}
+        style={{ paddingLeft: `${level * 16 + 8}px` }}
         onClick={handleNodeClick}
         onDoubleClick={handleNodeDoubleClick}
+        onPointerDown={(e) => handleNodePointerDown(e, node)}
+        draggable={false}
+        onDragStart={(e) => e.preventDefault()}
       >
+        {isDropBefore && (
+          <div className="absolute top-0 right-0 h-0.5 bg-primary rounded" style={{ left: `${level * 16 + 8}px` }} />
+        )}
+        {isDropAfter && (
+          <div className="absolute bottom-0 right-0 h-0.5 bg-primary rounded" style={{ left: `${level * 16 + 8}px` }} />
+        )}
         {node.type === 'folder' && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="p-0 h-4 w-4"
-            data-no-drag
-            draggable={false}
-            onMouseDown={(event) => event.stopPropagation()}
-            onClick={(event) => {
-              event.stopPropagation();
-              toggleExpanded(node.id);
-            }}
-          >
+          <Button variant="ghost" size="sm" className="p-0 h-4 w-4">
             {node.isExpanded ?
               <ChevronDown className="w-3 h-3" /> :
               <ChevronRight className="w-3 h-3" />
@@ -566,42 +664,19 @@ export function ConnectionManager({
         )}
         {node.type === 'connection' && <div className="w-4" />}
 
-        <div className="relative shrink-0">
+        <div className="relative">
           {getIcon(node)}
           {isConnected && (
             <div className="absolute -bottom-0.5 -right-0.5 w-2 h-2 bg-green-500 rounded-full border border-card" />
           )}
         </div>
-        <span className="text-sm flex-1 truncate">{node.name}</span>
+        <span className="text-sm flex-1">{node.name}</span>
       </div>
-    );
-
-    const dragHandle = canDrag ? (
-      <div
-        className="flex items-center px-0.5 text-muted-foreground hover:text-foreground cursor-grab active:cursor-grabbing shrink-0 touch-none"
-        title={t('connectionManager.dragToMove')}
-        onPointerDown={(event) => handleGripPointerDown(event, node)}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <GripVertical className="w-3.5 h-3.5" />
-      </div>
-    ) : (
-      <div className="w-4 shrink-0" />
     );
 
     return (
       <div key={node.id}>
-        <div
-          className={`flex items-center rounded-sm ${
-            isDragging ? 'opacity-50' : ''
-          } ${dropTargetId === node.id ? 'ring-1 ring-primary/60 bg-accent/70' : ''}`}
-          style={{ paddingLeft: `${level * 16 + 4}px` }}
-          data-connection-drop-id={node.id}
-          data-connection-drop-type={node.type}
-          data-connection-drop-path={node.type === 'folder' ? (node.path || '') : ''}
-        >
-          {dragHandle}
-          {node.type === 'connection' ? (
+        {node.type === 'connection' ? (
           <ContextMenu onOpenChange={(open) => {
             if (open) {
               // Select the connection when context menu opens (right-click)
@@ -609,7 +684,7 @@ export function ConnectionManager({
             }
           }}>
             <ContextMenuTrigger asChild>
-              {rowBody}
+              {nodeContent}
             </ContextMenuTrigger>
             <ContextMenuContent>
               <ContextMenuItem
@@ -655,7 +730,7 @@ export function ConnectionManager({
             }
           }}>
             <ContextMenuTrigger asChild>
-              {rowBody}
+              {nodeContent}
             </ContextMenuTrigger>
             <ContextMenuContent>
               <ContextMenuItem
@@ -663,12 +738,6 @@ export function ConnectionManager({
               >
                 <FolderPlus className="w-4 h-4 mr-2" />
                 {t('connectionManager.newSubfolder')}
-              </ContextMenuItem>
-              <ContextMenuItem
-                onClick={() => handleSortFolderByName(node.path!, node.name)}
-              >
-                <ArrowDownAZ className="w-4 h-4 mr-2" />
-                {t('connectionManager.sortByName')}
               </ContextMenuItem>
               {node.path !== 'All Connections' && (
                 <>
@@ -695,9 +764,8 @@ export function ConnectionManager({
             </ContextMenuContent>
           </ContextMenu>
         ) : (
-          rowBody
+          nodeContent
         )}
-        </div>
 
         {node.type === 'folder' && node.isExpanded && node.children && (
           <div>
@@ -710,7 +778,7 @@ export function ConnectionManager({
 
   return (
     <>
-    <div className="bg-card h-full flex flex-col">
+    <div className="bg-card border-r border-border h-full flex flex-col">
       {/* Connection Browser */}
       <div className="flex-1 min-h-0 flex flex-col">
         <div className="px-3 py-1.5 border-b border-border flex items-center gap-1">
@@ -789,7 +857,11 @@ export function ConnectionManager({
             </Tooltip>
           </TooltipProvider>
         </div>
-        <div className="flex-1 overflow-auto">
+        <div
+          ref={treeContainerRef}
+          data-conn-tree-container="true"
+          className={`flex-1 overflow-auto ${dropTarget?.nodeId === ROOT_DROP_ID ? 'ring-1 ring-inset ring-primary/30' : ''}`}
+        >
           {connections.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full p-4 text-center">
               <p className="text-sm text-muted-foreground mb-4">{t('connectionManager.noConnectionsYet')}</p>
@@ -978,14 +1050,16 @@ export function ConnectionManager({
       </DialogContent>
     </Dialog>
 
-      {dragGhost && (
-        <div
-          className="pointer-events-none fixed z-[9999] rounded border bg-popover px-2 py-1 text-xs shadow-md"
-          style={{ left: dragGhost.x + 12, top: dragGhost.y + 12 }}
-        >
-          {dragGhost.name}
-        </div>
-      )}
+    {/* Drag ghost following the pointer (HTML5 drag image is unavailable in WKWebView) */}
+    {dragGhost && (
+      <div
+        className="fixed z-50 pointer-events-none flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-border bg-popover text-popover-foreground shadow-md text-sm"
+        style={{ left: dragGhost.x + 12, top: dragGhost.y + 12 }}
+      >
+        {dragGhost.type === 'folder' ? <Folder className="w-3.5 h-3.5" /> : <Server className="w-3.5 h-3.5 text-green-500" />}
+        <span className="max-w-[160px] truncate">{dragGhost.name}</span>
+      </div>
+    )}
     </>
   );
 }
