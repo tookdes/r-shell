@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useReducer, useRef, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { writeText as writeClipboardText } from '@tauri-apps/plugin-clipboard-manager';
 import { save, open as tauriOpen } from '@tauri-apps/plugin-dialog';
 import { withRetry, CancelledError } from '@/lib/async-retry';
@@ -119,6 +120,56 @@ export function IntegratedFileBrowser({ connectionId, host: _host, isConnected, 
   const [transfers, dispatchTransfer] = useReducer(transferQueueReducer, []);
   const [queueExpanded, setQueueExpanded] = useState(false);
   const processTransferRef = useRef(false);
+  // Latest transfers snapshot for the progress listener (reducer dispatch can't
+  // read state, and the listener must stay subscribed to the connection).
+  const transfersRef = useRef(transfers);
+  useEffect(() => {
+    transfersRef.current = transfers;
+  }, [transfers]);
+  // Per-transfer {bytes, timestamp} for speed calculation between progress events.
+  const progressStateRef = useRef<Record<string, { bytes: number; time: number }>>({});
+
+  // Real-time transfer progress from the backend (upload_remote_file /
+  // download_remote_file emit `transfer-progress` events per chunk).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{
+      connection_id: string;
+      transfer_id?: string | null;
+      bytes: number;
+    }>('transfer-progress', (event) => {
+      const payload = event.payload;
+      if (payload.connection_id !== connectionId || !payload.transfer_id) return;
+      const item = transfersRef.current.find(i => i.id === payload.transfer_id);
+      if (!item) return;
+      const total = item.totalBytes > 0 ? item.totalBytes : 1;
+      const now = Date.now();
+      const prev = progressStateRef.current[payload.transfer_id];
+      let speed = item.speed;
+      if (prev && prev.bytes < payload.bytes) {
+        const dt = (now - prev.time) / 1000;
+        if (dt > 0.05) speed = Math.max(0, (payload.bytes - prev.bytes) / dt);
+      }
+      progressStateRef.current[payload.transfer_id] = { bytes: payload.bytes, time: now };
+      dispatchTransfer({
+        type: "PROGRESS",
+        id: payload.transfer_id,
+        progress: Math.min(100, Math.round((payload.bytes / total) * 100)),
+        bytesTransferred: payload.bytes,
+        speed,
+      });
+    }).then((fn) => { unlisten = fn; }).catch(() => {
+      // Not running inside Tauri (e.g. unit tests) — progress events are inert.
+    });
+    return () => { unlisten?.(); };
+  }, [connectionId]);
+
+  // Cancel a transfer: mark it cancelled locally AND abort the backend work so
+  // the invoke() promise doesn't keep running and later overwrite the state.
+  const handleCancelTransfer = useCallback((id: string) => {
+    dispatchTransfer({ type: "CANCEL", id });
+    void invoke("abort_connection_transfers", { connectionId }).catch(() => {});
+  }, [connectionId]);
   const [searchTerm, setSearchTerm] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [showLoadingOverlay, setShowLoadingOverlay] = useState(false);
@@ -385,6 +436,7 @@ export function IntegratedFileBrowser({ connectionId, host: _host, isConnected, 
               connectionId,
               localPath: nextItem.sourcePath,
               remotePath: nextItem.destinationPath,
+              transferId: nextItem.id,
             },
           );
           if (result.success) {
@@ -408,6 +460,7 @@ export function IntegratedFileBrowser({ connectionId, host: _host, isConnected, 
               connectionId,
               remotePath: nextItem.sourcePath,
               localPath: nextItem.destinationPath,
+              transferId: nextItem.id,
             },
           );
           if (result.success) {
@@ -1901,6 +1954,7 @@ export function IntegratedFileBrowser({ connectionId, host: _host, isConnected, 
       <TransferQueue
         transfers={transfers}
         dispatch={dispatchTransfer}
+        onCancel={handleCancelTransfer}
         expanded={queueExpanded}
         onToggleExpanded={() => setQueueExpanded(p => !p)}
       />

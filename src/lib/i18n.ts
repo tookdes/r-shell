@@ -107,7 +107,7 @@ async function resolvePreference(pref: string): Promise<string> {
 
 /** Apply a concrete language code to i18next without touching storage. */
 function applyCode(code: string): void {
-  if (i18n.language !== code) i18n.changeLanguage(code);
+  if (i18n.language !== code) void i18n.changeLanguage(code);
 }
 
 /**

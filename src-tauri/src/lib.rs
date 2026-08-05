@@ -2,12 +2,12 @@ mod commands;
 mod connection_manager;
 mod desktop_protocol;
 mod ftp_client;
-mod known_hosts;
 mod host_key_prompt;
-mod proxy_stream;
-mod secrets;
+mod known_hosts;
 mod os_detect;
+mod proxy_stream;
 mod rdp_client;
+mod secrets;
 mod sftp_client;
 mod ssh;
 mod vnc_client;
@@ -136,14 +136,38 @@ fn build_app_menu<F: Fn(&str) -> String>(
         &t("menuBar.connection"),
         true,
         &[
-            &MenuItem::with_id(app, "new_tab", &t("menuBar.newTab"), true, Some("CmdOrCtrl+T"))?,
-            &MenuItem::with_id(app, "clone_tab", &t("menuBar.duplicateTab"), true, Some("CmdOrCtrl+D"))?,
+            &MenuItem::with_id(
+                app,
+                "new_tab",
+                &t("menuBar.newTab"),
+                true,
+                Some("CmdOrCtrl+T"),
+            )?,
+            &MenuItem::with_id(
+                app,
+                "clone_tab",
+                &t("menuBar.duplicateTab"),
+                true,
+                Some("CmdOrCtrl+D"),
+            )?,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, "next_tab", &t("menuBar.nextTab"), true, None::<&str>)?,
-            &MenuItem::with_id(app, "prev_tab", &t("menuBar.previousTab"), true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "prev_tab",
+                &t("menuBar.previousTab"),
+                true,
+                None::<&str>,
+            )?,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, "reconnect", &t("menuBar.reconnect"), true, Some("F5"))?,
-            &MenuItem::with_id(app, "disconnect", &t("menuBar.disconnect"), true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "disconnect",
+                &t("menuBar.disconnect"),
+                true,
+                None::<&str>,
+            )?,
         ],
     )?;
 
@@ -337,7 +361,9 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 let app_handle = window.app_handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    if let Some(manager) = app_handle.try_state::<std::sync::Arc<ConnectionManager>>() {
+                    if let Some(manager) =
+                        app_handle.try_state::<std::sync::Arc<ConnectionManager>>()
+                    {
                         manager.close_all_connections().await;
                     }
                 });

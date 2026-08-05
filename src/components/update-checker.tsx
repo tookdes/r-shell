@@ -200,13 +200,14 @@ export function UpdateChecker({ checkSignal }: UpdateCheckerProps) {
       const message = caught instanceof Error ? caught.message : 'Failed to install update.';
       setStatus('error');
       setError(message);
-      toast.error('Install failed', { description: message });
+      toast.error(t('updateChecker.installFailed'), { description: message });
     }
   }, [updateInfo]);
 
   useEffect(() => {
     if (isAutoCheckEnabled()) {
-      checkForUpdates(false);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: check once on mount
+      void checkForUpdates(false);
     }
   }, [checkForUpdates]);
 
@@ -214,14 +215,14 @@ export function UpdateChecker({ checkSignal }: UpdateCheckerProps) {
     if (typeof checkSignal === 'number') {
       if (lastSignalRef.current !== checkSignal) {
         lastSignalRef.current = checkSignal;
-        checkForUpdates(true);
+        void checkForUpdates(true);
       }
     }
   }, [checkSignal, checkForUpdates]);
 
   const notes = useMemo(() => {
     if (!updateInfo?.body) {
-      return 'A new version is available with improvements and fixes.';
+      return t('updateChecker.availableFallback');
     }
 
     return updateInfo.body;

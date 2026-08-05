@@ -181,7 +181,12 @@ fn encode_output_frame(connection_id: &str, data: &[u8]) -> Vec<u8> {
 /// Control messages are best-effort — a saturated channel returns `Dropped`.
 async fn send_control(tx: &WsTx, msg: &WsMessage) -> Result<SendOutcome> {
     let frame = Message::Text(serde_json::to_string(msg)?.into());
-    match tokio::time::timeout(Duration::from_millis(CONTROL_SEND_TIMEOUT_MS), tx.send(frame)).await {
+    match tokio::time::timeout(
+        Duration::from_millis(CONTROL_SEND_TIMEOUT_MS),
+        tx.send(frame),
+    )
+    .await
+    {
         Ok(Ok(())) => Ok(SendOutcome::Sent),
         Ok(Err(_)) => Ok(SendOutcome::Closed),
         Err(_) => Ok(SendOutcome::Dropped),
@@ -299,18 +304,26 @@ impl WebSocketServer {
             match msg {
                 Ok(Message::Binary(data)) => {
                     // Binary INPUT command from frontend (fast path, no JSON).
-                    // Format: [0x00][connection_id: 36 bytes][data bytes]
+                    // Format: [0x00][id_len: u16 BE][connection_id bytes][data bytes]
+                    // (symmetric with the binary output frame encoding)
                     if data.is_empty() {
                         continue;
                     }
                     match data[0] {
                         0x00 => {
-                            if data.len() < 37 {
+                            if data.len() < 3 {
                                 tracing::warn!("Binary INPUT message too short");
                                 continue;
                             }
-                            let connection_id = String::from_utf8_lossy(&data[1..37]).to_string();
-                            let input_data = data[37..].to_vec();
+                            let id_len = ((data[1] as usize) << 8) | data[2] as usize;
+                            let payload_offset = 3 + id_len;
+                            if data.len() < payload_offset {
+                                tracing::warn!("Binary INPUT message truncated");
+                                continue;
+                            }
+                            let connection_id =
+                                String::from_utf8_lossy(&data[3..payload_offset]).to_string();
+                            let input_data = data[payload_offset..].to_vec();
                             if let Err(e) = self
                                 .connection_manager
                                 .write_to_pty(&connection_id, input_data)
@@ -340,10 +353,16 @@ impl WebSocketServer {
                         .handle_message(ws_msg, tx.clone(), output_controls.clone())
                         .await
                     {
-                        Ok(PtyLifecycleEvent::Started { connection_id, generation }) => {
+                        Ok(PtyLifecycleEvent::Started {
+                            connection_id,
+                            generation,
+                        }) => {
                             active_pty_generations.insert(connection_id, generation);
                         }
-                        Ok(PtyLifecycleEvent::Closed { connection_id, generation }) => {
+                        Ok(PtyLifecycleEvent::Closed {
+                            connection_id,
+                            generation,
+                        }) => {
                             if should_remove_pty_state(
                                 active_pty_generations.get(&connection_id).copied(),
                                 generation,
@@ -431,7 +450,10 @@ impl WebSocketServer {
                 // 1 permit before each flush; the frontend grants permits via
                 // Resume messages (1 per frame processed by xterm).
                 let credits: OutputCredits = Arc::new(Semaphore::new(0));
-                output_controls.lock().await.insert(connection_id.clone(), Arc::clone(&credits));
+                output_controls
+                    .lock()
+                    .await
+                    .insert(connection_id.clone(), Arc::clone(&credits));
 
                 let response = WsMessage::Success {
                     message: format!("PTY connection started: {}", connection_id),
@@ -480,8 +502,7 @@ impl WebSocketServer {
                             Ok(data) if data.is_empty() => {
                                 // 1 ms poll returned nothing — flush if interval elapsed.
                                 if !accumulated.is_empty()
-                                    && last_flush.elapsed().as_millis()
-                                        >= OUTPUT_FLUSH_INTERVAL_MS
+                                    && last_flush.elapsed().as_millis() >= OUTPUT_FLUSH_INTERVAL_MS
                                 {
                                     // Wait for 1 frontend ACK before sending.
                                     let ok = tokio::select! {
@@ -509,8 +530,7 @@ impl WebSocketServer {
                             Ok(data) => {
                                 accumulated.extend_from_slice(&data);
                                 if accumulated.len() >= OUTPUT_FLUSH_BYTES
-                                    || last_flush.elapsed().as_millis()
-                                        >= OUTPUT_FLUSH_INTERVAL_MS
+                                    || last_flush.elapsed().as_millis() >= OUTPUT_FLUSH_INTERVAL_MS
                                 {
                                     // Wait for 1 frontend ACK before sending.
                                     let ok = tokio::select! {

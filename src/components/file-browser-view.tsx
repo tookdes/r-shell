@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useReducer, useRef } from "react";
 import { useTranslation } from 'react-i18next';
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import {
   WifiOff,
@@ -153,6 +154,52 @@ export function FileBrowserView({
 
   // ------ Transfer execution ------
   const processTransferRef = useRef(false);
+  const transfersRef = useRef(transfers);
+  useEffect(() => {
+    transfersRef.current = transfers;
+  }, [transfers]);
+  const progressStateRef = useRef<Record<string, { bytes: number; time: number }>>({});
+
+  // Real-time transfer progress from the backend.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{
+      connection_id: string;
+      transfer_id?: string | null;
+      bytes: number;
+    }>('transfer-progress', (event) => {
+      const payload = event.payload;
+      if (payload.connection_id !== connectionId || !payload.transfer_id) return;
+      const item = transfersRef.current.find(i => i.id === payload.transfer_id);
+      if (!item) return;
+      const total = item.totalBytes > 0 ? item.totalBytes : 1;
+      const now = Date.now();
+      const prev = progressStateRef.current[payload.transfer_id];
+      let speed = item.speed;
+      if (prev && prev.bytes < payload.bytes) {
+        const dt = (now - prev.time) / 1000;
+        if (dt > 0.05) speed = Math.max(0, (payload.bytes - prev.bytes) / dt);
+      }
+      progressStateRef.current[payload.transfer_id] = { bytes: payload.bytes, time: now };
+      dispatchTransfer({
+        type: "PROGRESS",
+        id: payload.transfer_id,
+        progress: Math.min(100, Math.round((payload.bytes / total) * 100)),
+        bytesTransferred: payload.bytes,
+        speed,
+      });
+    }).then((fn) => { unlisten = fn; }).catch(() => {
+      // Not running inside Tauri (e.g. unit tests) — progress events are inert.
+    });
+    return () => { unlisten?.(); };
+  }, [connectionId]);
+
+  // Backend-aware cancel: abort the in-flight invoke so it can't overwrite the
+  // cancelled state when it eventually returns.
+  const handleCancelTransfer = useCallback((id: string) => {
+    dispatchTransfer({ type: "CANCEL", id });
+    void invoke("abort_connection_transfers", { connectionId }).catch(() => {});
+  }, [connectionId]);
 
   useEffect(() => {
     const nextItem = getNextQueuedTransfer(transfers);
@@ -170,6 +217,7 @@ export function FileBrowserView({
               connectionId,
               localPath: nextItem.sourcePath,
               remotePath: nextItem.destinationPath,
+              transferId: nextItem.id,
             },
           );
           if (result.success) {
@@ -189,6 +237,7 @@ export function FileBrowserView({
               connectionId,
               remotePath: nextItem.sourcePath,
               localPath: nextItem.destinationPath,
+              transferId: nextItem.id,
             },
           );
           if (result.success) {
@@ -632,6 +681,7 @@ export function FileBrowserView({
         <TransferQueue
           transfers={transfers}
           dispatch={dispatchTransfer}
+          onCancel={handleCancelTransfer}
           expanded={queueExpanded}
           onToggleExpanded={() => setQueueExpanded((p) => !p)}
         />

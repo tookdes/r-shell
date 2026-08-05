@@ -40,6 +40,9 @@ export type { TransferItem } from "@/lib/transfer-queue-reducer";
 interface TransferQueueProps {
   transfers: TransferItem[];
   dispatch: React.Dispatch<TransferAction>;
+  /** Optional backend-aware cancel: aborts the in-flight invoke so the state
+   *  isn't overwritten by the still-running transfer when it returns. */
+  onCancel?: (id: string) => void;
   expanded: boolean;
   onToggleExpanded: () => void;
 }
@@ -85,6 +88,7 @@ function statusIcon(status: TransferItem["status"]) {
 export function TransferQueue({
   transfers,
   dispatch,
+  onCancel,
   expanded,
   onToggleExpanded,
 }: TransferQueueProps) {
@@ -279,7 +283,9 @@ export function TransferQueue({
                       className="h-5 w-5 shrink-0"
                       title={t('transferQueue.cancel')}
                       onClick={() =>
-                        dispatch({ type: "CANCEL", id: item.id })
+                        onCancel
+                          ? onCancel(item.id)
+                          : dispatch({ type: "CANCEL", id: item.id })
                       }
                     >
                       <X className="h-3 w-3" />

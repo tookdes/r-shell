@@ -1,7 +1,9 @@
 use anyhow::Result;
-use async_std::io::ReadExt;
+use async_std::io::{ReadExt, WriteExt};
 use serde::Deserialize;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_util::sync::CancellationToken;
 
 use crate::sftp_client::{FileEntry, FileEntryType};
 
@@ -42,6 +44,7 @@ pub struct FtpClient {
 }
 
 impl FtpClient {
+    #[allow(dead_code)] // Used by unit tests.
     pub fn new() -> Self {
         Self { stream: None }
     }
@@ -143,6 +146,7 @@ impl FtpClient {
         })
     }
 
+    #[allow(dead_code)] // Used by unit tests.
     pub fn is_connected(&self) -> bool {
         self.stream.is_some()
     }
@@ -194,41 +198,132 @@ impl FtpClient {
     }
 
     /// Download a remote file to a local path. Returns bytes downloaded.
-    pub async fn download_file(&mut self, remote_path: &str, local_path: &str) -> Result<u64> {
-        let data: Vec<u8> = ftp_stream!(self, s => {
+    /// Stream a remote file to a local path in chunks with progress reporting
+    /// and cancellation. `on_progress(bytes_so_far)` returning `false` aborts.
+    pub async fn download_file_progress<F>(
+        &mut self,
+        remote_path: &str,
+        local_path: &str,
+        cancel: &CancellationToken,
+        on_progress: &mut F,
+    ) -> Result<u64>
+    where
+        F: FnMut(u64) -> bool + Send,
+    {
+        let mut total_bytes: u64 = 0;
+        ftp_stream!(self, s => {
             let mut data_stream = s.retr_as_stream(remote_path).await.map_err(|e| {
                 anyhow::anyhow!("Failed to download file '{}': {}", remote_path, e)
             })?;
-            let mut buf = Vec::new();
-            data_stream.read_to_end(&mut buf).await.map_err(|e| {
-                anyhow::anyhow!("Failed to read download stream: {}", e)
+            let mut file = tokio::fs::File::create(local_path).await.map_err(|e| {
+                anyhow::anyhow!("Failed to create local file '{}': {}", local_path, e)
+            })?;
+            let mut buf = vec![0u8; 32768];
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => {
+                        let _ = file.flush().await;
+                        return Err(anyhow::anyhow!("Transfer cancelled"));
+                    }
+                    result = data_stream.read(&mut buf) => {
+                        let n = result.map_err(|e| {
+                            anyhow::anyhow!("Failed to read download stream: {}", e)
+                        })?;
+                        if n == 0 {
+                            break;
+                        }
+                        file.write_all(&buf[..n]).await.map_err(|e| {
+                            anyhow::anyhow!("Failed to write local file: {}", e)
+                        })?;
+                        total_bytes += n as u64;
+                        if !on_progress(total_bytes) {
+                            let _ = file.flush().await;
+                            return Err(anyhow::anyhow!("Transfer cancelled"));
+                        }
+                    }
+                }
+            }
+            file.flush().await.map_err(|e| {
+                anyhow::anyhow!("Failed to flush local file: {}", e)
             })?;
             s.finalize_retr_stream(data_stream).await.map_err(|e| {
                 anyhow::anyhow!("Failed to finalize download: {}", e)
             })?;
-            buf
         });
-
-        let total_bytes = data.len() as u64;
-        tokio::fs::write(local_path, data).await?;
         Ok(total_bytes)
     }
 
-    /// Upload a local file to a remote path. Returns bytes uploaded.
-    pub async fn upload_file(&mut self, local_path: &str, remote_path: &str) -> Result<u64> {
-        let data = tokio::fs::read(local_path)
+    /// Backward-compatible whole-file download (also exercised by unit tests).
+    #[allow(dead_code)]
+    pub async fn download_file(&mut self, remote_path: &str, local_path: &str) -> Result<u64> {
+        let cancel = CancellationToken::new();
+        let mut noop = |_: u64| true;
+        self.download_file_progress(remote_path, local_path, &cancel, &mut noop)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to read local file '{}': {}", local_path, e))?;
-        let total_bytes = data.len() as u64;
+    }
 
+    /// Stream a local file to a remote path in chunks with progress reporting
+    /// and cancellation. `on_progress(bytes_sent)` returning `false` aborts.
+    pub async fn upload_file_progress<F>(
+        &mut self,
+        local_path: &str,
+        remote_path: &str,
+        cancel: &CancellationToken,
+        on_progress: &mut F,
+    ) -> Result<u64>
+    where
+        F: FnMut(u64) -> bool + Send,
+    {
+        let mut sent: u64 = 0;
         ftp_stream!(self, s => {
-            let mut reader = async_std::io::Cursor::new(data);
-            s.put_file(remote_path, &mut reader).await.map_err(|e| {
+            let mut data_stream = s.put_with_stream(remote_path).await.map_err(|e| {
                 anyhow::anyhow!("Failed to upload file '{}': {}", remote_path, e)
-            })?
+            })?;
+            let mut file = tokio::fs::File::open(local_path).await.map_err(|e| {
+                anyhow::anyhow!("Failed to read local file '{}': {}", local_path, e)
+            })?;
+            let mut buf = vec![0u8; 32768];
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => {
+                        return Err(anyhow::anyhow!("Transfer cancelled"));
+                    }
+                    result = file.read(&mut buf) => {
+                        let n = result.map_err(|e| {
+                            anyhow::anyhow!("Failed to read local file: {}", e)
+                        })?;
+                        if n == 0 {
+                            break;
+                        }
+                        data_stream.write_all(&buf[..n]).await.map_err(|e| {
+                            anyhow::anyhow!("Failed to write upload stream: {}", e)
+                        })?;
+                        sent += n as u64;
+                        if !on_progress(sent) {
+                            return Err(anyhow::anyhow!("Transfer cancelled"));
+                        }
+                    }
+                }
+            }
+            data_stream.flush().await.map_err(|e| {
+                anyhow::anyhow!("Failed to flush upload stream: {}", e)
+            })?;
+            s.finalize_put_stream(data_stream).await.map_err(|e| {
+                anyhow::anyhow!("Failed to finalize upload: {}", e)
+            })?;
         });
+        Ok(sent)
+    }
 
-        Ok(total_bytes)
+    /// Backward-compatible whole-file upload (also exercised by unit tests).
+    #[allow(dead_code)]
+    pub async fn upload_file(&mut self, local_path: &str, remote_path: &str) -> Result<u64> {
+        let cancel = CancellationToken::new();
+        let mut noop = |_: u64| true;
+        self.upload_file_progress(local_path, remote_path, &cancel, &mut noop)
+            .await
     }
 
     /// Create a directory on the remote server.
@@ -344,9 +439,18 @@ fn parse_ftp_list_line(line: &str) -> Option<FileEntry> {
 /// Parse FTP `ls` date fields ("Mon DD HH:MM" or "Mon DD YYYY") into "yyyy-mm-dd hh:mm:ss".
 fn parse_ftp_modified(month_str: &str, day_str: &str, time_or_year: &str) -> Option<String> {
     let month_num = match month_str {
-        "Jan" => 1u32, "Feb" => 2, "Mar" => 3, "Apr" => 4,
-        "May" => 5, "Jun" => 6, "Jul" => 7, "Aug" => 8,
-        "Sep" => 9, "Oct" => 10, "Nov" => 11, "Dec" => 12,
+        "Jan" => 1u32,
+        "Feb" => 2,
+        "Mar" => 3,
+        "Apr" => 4,
+        "May" => 5,
+        "Jun" => 6,
+        "Jul" => 7,
+        "Aug" => 8,
+        "Sep" => 9,
+        "Oct" => 10,
+        "Nov" => 11,
+        "Dec" => 12,
         _ => return None,
     };
     let day: u32 = day_str.parse().unwrap_or(1);
@@ -366,13 +470,18 @@ fn parse_ftp_modified(month_str: &str, day_str: &str, time_or_year: &str) -> Opt
             let mut rem = days as i64;
             loop {
                 let dy = if is_leap_year(y) { 366 } else { 365 };
-                if rem < dy { break; }
+                if rem < dy {
+                    break;
+                }
                 rem -= dy;
                 y += 1;
             }
             y as u32
         };
-        Some(format!("{:04}-{:02}-{:02} {:02}:{:02}:00", current_year, month_num, day, hh, mm))
+        Some(format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:00",
+            current_year, month_num, day, hh, mm
+        ))
     } else {
         // Older file: "YYYY" — time is 00:00:00
         let year: u32 = time_or_year.parse().unwrap_or(1970);

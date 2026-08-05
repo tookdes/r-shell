@@ -12,6 +12,9 @@ use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
+/// A shared handle to a desktop (RDP/VNC) protocol client.
+type DesktopClient = Arc<RwLock<Box<dyn DesktopProtocol>>>;
+
 pub struct ConnectionManager {
     connections: Arc<RwLock<HashMap<String, Arc<RwLock<SshClient>>>>>,
     pty_sessions: Arc<RwLock<HashMap<String, Arc<PtySession>>>>,
@@ -24,9 +27,10 @@ pub struct ConnectionManager {
     /// FTP/FTPS connections
     ftp_connections: Arc<RwLock<HashMap<String, FtpClient>>>,
     /// Remote desktop (RDP/VNC) connections
-    desktop_connections: Arc<RwLock<HashMap<String, Arc<RwLock<Box<dyn DesktopProtocol>>>>>>,
+    desktop_connections: Arc<RwLock<HashMap<String, DesktopClient>>>,
     /// Track protocol type per connection ID ("SSH", "SFTP", "FTP", "RDP", "VNC")
     connection_types: Arc<RwLock<HashMap<String, String>>>,
+    // (see type alias above for `desktop_connections`)
     /// Cached OS info per SSH connection (auto-detected on first monitoring call)
     os_info_cache: OsInfoCache,
     /// Per-connection cancellation for in-flight file transfers.
@@ -163,7 +167,7 @@ impl ConnectionManager {
         }
     }
 
-        pub async fn list_connections(&self) -> Vec<String> {
+    pub async fn list_connections(&self) -> Vec<String> {
         let connections = self.connections.read().await;
         connections.keys().cloned().collect()
     }
@@ -313,7 +317,6 @@ impl ConnectionManager {
             .map_err(|_| anyhow::anyhow!("PTY resize channel closed"))
     }
 
-
     /// Token that file-transfer commands should select on / poll.
     pub async fn transfer_token(&self, connection_id: &str) -> CancellationToken {
         let mut tokens = self.transfer_tokens.write().await;
@@ -460,6 +463,7 @@ impl ConnectionManager {
     }
 
     /// Start the frame update loop for a desktop connection.
+    #[allow(dead_code)] // Reserved for future desktop streaming use.
     pub async fn start_desktop_stream(
         &self,
         connection_id: &str,

@@ -306,7 +306,8 @@
       "clearKnownHostsHost": "Host",
       "clearKnownHostsPort": "Port",
       "clearKnownHostsButton": "Clear Host Key",
-      "clearKnownHostsSuccess": "Host key cleared"
+      "clearKnownHostsSuccess": "Host key cleared",
+      "clearKnownHostsHostPlaceholder": "example.com"
     },
     "interface": {
       "title": "Interface Settings",
@@ -356,7 +357,9 @@
       "importFailed": "Import failed",
       "exportFailed": "Export failed",
       "passwordWarning": "Warning: The exported file contains passwords in plaintext. Keep it secure.",
-      "mergeOption": "Merge with existing"
+      "mergeOption": "Merge with existing",
+      "scrollLeft": "Scroll left",
+      "scrollRight": "Scroll right"
     },
     "language": {
       "label": "Language",
@@ -678,7 +681,9 @@
     "downloadFailed": "Download Failed",
     "downloadFailedDesc": "Unable to download the update. Please try again later.",
     "checkFailed": "Check Failed",
-    "checkFailedDesc": "Unable to check for updates. Please try again later."
+    "checkFailedDesc": "Unable to check for updates. Please try again later.",
+    "installFailed": "Install failed",
+    "availableFallback": "A new version is available with improvements and fixes."
   },
   "syncDialog": {
     "title": "Directory Sync",

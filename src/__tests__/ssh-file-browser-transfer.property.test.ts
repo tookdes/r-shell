@@ -171,9 +171,15 @@ describe("Property 3: COMPLETE sets terminal state", () => {
             type: "COMPLETE",
             id: targetId,
           });
-          expect(result[idx].status).toBe("completed");
-          expect(result[idx].progress).toBe(100);
-          expect(result[idx].completedAt).toBeDefined();
+          // Cancelled is a terminal state: a late success from a cancelled
+          // in-flight transfer must not resurrect the item.
+          if (items[idx].status === "cancelled") {
+            expect(result[idx].status).toBe("cancelled");
+          } else {
+            expect(result[idx].status).toBe("completed");
+            expect(result[idx].progress).toBe(100);
+            expect(result[idx].completedAt).toBeDefined();
+          }
           // Other items unchanged
           for (let i = 0; i < items.length; i++) {
             if (i !== idx) {
@@ -203,9 +209,15 @@ describe("Property 4: FAIL stores error and sets terminal state", () => {
             id: targetId,
             error: errorMsg,
           });
-          expect(result[idx].status).toBe("failed");
-          expect(result[idx].error).toBe(errorMsg);
-          expect(result[idx].completedAt).toBeDefined();
+          // Cancelled is a terminal state: a late error from a cancelled
+          // in-flight transfer must not overwrite the cancellation.
+          if (items[idx].status === "cancelled") {
+            expect(result[idx].status).toBe("cancelled");
+          } else {
+            expect(result[idx].status).toBe("failed");
+            expect(result[idx].error).toBe(errorMsg);
+            expect(result[idx].completedAt).toBeDefined();
+          }
           // Other items unchanged
           for (let i = 0; i < items.length; i++) {
             if (i !== idx) {

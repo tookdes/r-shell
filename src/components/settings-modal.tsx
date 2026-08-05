@@ -378,7 +378,7 @@ export function SettingsModal({ open, onOpenChange, onAppearanceChange, onCheckF
                   onClick={() => scrollTabs('left')}
                   className="pointer-events-auto flex items-center justify-center h-6 w-6 rounded-full bg-muted border border-border/50 shadow-sm hover:bg-muted/80 transition-colors"
                   tabIndex={-1}
-                  aria-label="Scroll left"
+                  aria-label={t('settings.advanced.scrollLeft')}
                 >
                   <ChevronLeft className="h-3.5 w-3.5 text-foreground" />
                 </button>
@@ -393,7 +393,7 @@ export function SettingsModal({ open, onOpenChange, onAppearanceChange, onCheckF
                   onClick={() => scrollTabs('right')}
                   className="pointer-events-auto flex items-center justify-center h-6 w-6 rounded-full bg-muted border border-border/50 shadow-sm hover:bg-muted/80 transition-colors"
                   tabIndex={-1}
-                  aria-label="Scroll right"
+                  aria-label={t('settings.advanced.scrollRight')}
                 >
                   <ChevronRight className="h-3.5 w-3.5 text-foreground" />
                 </button>
@@ -974,7 +974,7 @@ export function SettingsModal({ open, onOpenChange, onAppearanceChange, onCheckF
                       <Input
                         value={knownHostsHost}
                         onChange={(e) => setKnownHostsHost(e.target.value)}
-                        placeholder="example.com"
+                        placeholder={t('settings.security.clearKnownHostsHostPlaceholder')}
                         className="h-8 w-48"
                       />
                     </div>

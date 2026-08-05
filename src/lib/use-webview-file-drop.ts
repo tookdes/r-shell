@@ -208,7 +208,11 @@ export function useWebviewFileDrop(
 
   // Stable refs for the latest options (avoid re-subscribing on every render).
   const optsRef = useRef(options);
-  optsRef.current = options;
+  // Keep the ref in sync after render — writing it during render is unsafe
+  // (react-hooks/refs) and can be missed by the commit phase.
+  useEffect(() => {
+    optsRef.current = options;
+  });
 
   const stableOnDrop = useCallback(
     (paths: string[]) => optsRef.current.onDrop(paths),
