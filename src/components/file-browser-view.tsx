@@ -64,6 +64,7 @@ export function FileBrowserView({
     direction: "upload" | "download";
     sourcePath: string;
     destPath: string;
+    destinationDirectoryName?: string;
   } | null>(null);
   const [localHomePath, setLocalHomePath] = useState<string | undefined>(
     undefined,
@@ -509,7 +510,8 @@ export function FileBrowserView({
         open: true,
         direction: "download",
         sourcePath: pathJoin(sourceDirPath, dirName),
-        destPath: pathJoin(localPath, dirName),
+        destPath: localPath,
+        destinationDirectoryName: dirName,
       });
     },
     [],
@@ -712,6 +714,7 @@ export function FileBrowserView({
           connectionId={connectionId}
           sourcePath={dirTransfer.sourcePath}
           destPath={dirTransfer.destPath}
+          destinationDirectoryName={dirTransfer.destinationDirectoryName}
           onComplete={handleDirTransferComplete}
         />
       )}

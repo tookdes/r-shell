@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { changeLanguage, getLanguagePreference, AUTO } from '@/lib/i18n';
@@ -61,8 +60,6 @@ import {
 } from '@/lib/config-export-import';
 import { normalizeUpdateProxy } from '@/lib/update-proxy';
 import { Checkbox } from './ui/checkbox';
-import { useLayout } from '@/lib/layout-context';
-import { ConnectionStorageManager } from '@/lib/connection-storage';
 
 interface SettingsModalProps {
   open: boolean;
@@ -73,9 +70,6 @@ interface SettingsModalProps {
 
 export function SettingsModal({ open, onOpenChange, onAppearanceChange, onCheckForUpdates }: SettingsModalProps) {
   const { t } = useTranslation();
-  const { layout } = useLayout();
-  const [knownHostsHost, setKnownHostsHost] = useState('');
-  const [knownHostsPort, setKnownHostsPort] = useState(22);
   const [languagePref, setLanguagePref] = useState<string>(() => getLanguagePreference());
   const [terminalAppearance, setTerminalAppearance] = useState<TerminalAppearanceSettings>(defaultAppearanceSettings);
   const [editorConfig, setEditorConfig] = useState<EditorConfig>(DEFAULT_EDITOR_CONFIG);
@@ -139,27 +133,16 @@ export function SettingsModal({ open, onOpenChange, onAppearanceChange, onCheckF
           setSettings(prev => ({
             ...prev,
             ...parsed,
-            // Reflect live layout for panel toggles (Ctrl+B / Ctrl+M can diverge from saved settings).
-            showConnectionManager: layout.leftSidebarVisible,
-            showSystemMonitor: layout.rightSidebarVisible,
-            showStatusBar:
-              typeof parsed.showStatusBar === 'boolean' ? parsed.showStatusBar : prev.showStatusBar,
             closeSession: keyboardShortcuts.closeTab,
             nextTab: keyboardShortcuts.nextTab,
             previousTab: keyboardShortcuts.prevTab,
-          }));
-        } else {
-          setSettings((previous) => ({
-            ...previous,
-            showConnectionManager: layout.leftSidebarVisible,
-            showSystemMonitor: layout.rightSidebarVisible,
           }));
         }
       } catch {
         // Ignore parsing errors
       }
     }
-  }, [open, layout.leftSidebarVisible, layout.rightSidebarVisible]);
+  }, [open]);
 
   const handleExportConfig = async () => {
     setIsExporting(true);
@@ -249,9 +232,6 @@ export function SettingsModal({ open, onOpenChange, onAppearanceChange, onCheckF
       ...settings,
       updateProxy: updateProxy ?? '',
     }));
-    if (!settings.savePasswords) {
-      ConnectionStorageManager.stripStoredSecrets();
-    }
     window.dispatchEvent(new Event(APP_SETTINGS_CHANGED_EVENT));
     onOpenChange(false);
     return true;
@@ -325,7 +305,7 @@ export function SettingsModal({ open, onOpenChange, onAppearanceChange, onCheckF
   const scrollToActiveTab = useCallback(() => {
     const el = tabListRef.current;
     if (!el) return;
-    const activeTrigger = el.querySelector('[data-state="active"]');
+    const activeTrigger = el.querySelector<HTMLElement>('[data-state="active"]');
     if (!activeTrigger) return;
     activeTrigger.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
   }, []);
@@ -382,7 +362,7 @@ export function SettingsModal({ open, onOpenChange, onAppearanceChange, onCheckF
                   onClick={() => scrollTabs('left')}
                   className="pointer-events-auto flex items-center justify-center h-6 w-6 rounded-full bg-muted border border-border/50 shadow-sm hover:bg-muted/80 transition-colors"
                   tabIndex={-1}
-                  aria-label={t('settings.advanced.scrollLeft')}
+                  aria-label={t('settings.tabScrollLeft')}
                 >
                   <ChevronLeft className="h-3.5 w-3.5 text-foreground" />
                 </button>
@@ -397,7 +377,7 @@ export function SettingsModal({ open, onOpenChange, onAppearanceChange, onCheckF
                   onClick={() => scrollTabs('right')}
                   className="pointer-events-auto flex items-center justify-center h-6 w-6 rounded-full bg-muted border border-border/50 shadow-sm hover:bg-muted/80 transition-colors"
                   tabIndex={-1}
-                  aria-label={t('settings.advanced.scrollRight')}
+                  aria-label={t('settings.tabScrollRight')}
                 >
                   <ChevronRight className="h-3.5 w-3.5 text-foreground" />
                 </button>
@@ -568,19 +548,6 @@ export function SettingsModal({ open, onOpenChange, onAppearanceChange, onCheckF
                   <Switch
                     checked={terminalAppearance.allowTransparency}
                     onCheckedChange={(checked) => updateTerminalAppearance('allowTransparency', checked)}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label>{t('settings.terminal.sendModifiedEnter')}</Label>
-                    <p className="text-sm text-muted-foreground">
-                      {t('settings.terminal.sendModifiedEnterDesc')}
-                    </p>
-                  </div>
-                  <Switch
-                    checked={terminalAppearance.sendModifiedEnterAsCsiU}
-                    onCheckedChange={(checked) => updateTerminalAppearance('sendModifiedEnterAsCsiU', checked)}
                   />
                 </div>
 
@@ -823,9 +790,9 @@ export function SettingsModal({ open, onOpenChange, onAppearanceChange, onCheckF
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="2">2 spaces</SelectItem>
-                        <SelectItem value="4">4 spaces</SelectItem>
-                        <SelectItem value="8">8 spaces</SelectItem>
+                        <SelectItem value="2">{t('settings.editor.tabSize2')}</SelectItem>
+                        <SelectItem value="4">{t('settings.editor.tabSize4')}</SelectItem>
+                        <SelectItem value="8">{t('settings.editor.tabSize8')}</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -982,50 +949,6 @@ export function SettingsModal({ open, onOpenChange, onAppearanceChange, onCheckF
                   />
                 </div>
 
-                <div className="space-y-2 rounded-md border p-3">
-                  <Label>{t('settings.security.clearKnownHosts')}</Label>
-                  <p className="text-sm text-muted-foreground">{t('settings.security.clearKnownHostsDesc')}</p>
-                  <div className="flex flex-wrap items-end gap-2">
-                    <div className="space-y-1">
-                      <Label className="text-xs">{t('settings.security.clearKnownHostsHost')}</Label>
-                      <Input
-                        value={knownHostsHost}
-                        onChange={(e) => setKnownHostsHost(e.target.value)}
-                        placeholder={t('settings.security.clearKnownHostsHostPlaceholder')}
-                        className="h-8 w-48"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs">{t('settings.security.clearKnownHostsPort')}</Label>
-                      <Input
-                        type="number"
-                        value={knownHostsPort}
-                        onChange={(e) => setKnownHostsPort(Number(e.target.value) || 22)}
-                        className="h-8 w-24"
-                      />
-                    </div>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={async () => {
-                        if (!knownHostsHost.trim()) return;
-                        try {
-                          await invoke('known_hosts_forget', {
-                            host: knownHostsHost.trim(),
-                            port: knownHostsPort || 22,
-                          });
-                          toast.success(t('settings.security.clearKnownHostsSuccess'));
-                        } catch (error) {
-                          toast.error(String(error));
-                        }
-                      }}
-                    >
-                      {t('settings.security.clearKnownHostsButton')}
-                    </Button>
-                  </div>
-                </div>
-
                 <Separator />
 
                 <div className="flex items-center justify-between">
@@ -1041,18 +964,17 @@ export function SettingsModal({ open, onOpenChange, onAppearanceChange, onCheckF
                   />
                 </div>
 
-                <div className="space-y-2 opacity-60">
+                <div className="space-y-2">
                   <Label>{t('settings.security.autoLockTimeout', { timeout: settings.autoLockTimeout })}</Label>
                   <Slider
                     value={[settings.autoLockTimeout]}
-                    disabled
-                    onValueChange={() => undefined}
+                    onValueChange={([value]) => updateSetting('autoLockTimeout', value)}
                     min={5}
                     max={120}
                     step={5}
                   />
                   <p className="text-sm text-muted-foreground">
-                    {t('settings.security.autoLockTimeoutNotImplemented')}
+                    {t('settings.security.autoLockTimeoutDesc')}
                   </p>
                 </div>
               </CardContent>

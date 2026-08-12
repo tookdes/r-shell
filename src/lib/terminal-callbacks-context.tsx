@@ -7,12 +7,15 @@ import { createContext, useContext } from 'react';
 export interface TerminalCallbacks {
   onDuplicateTab?: (tabId: string) => void | Promise<void>;
   onNewTab?: () => void;
+  closeTabShortcut?: string;
   /** Full reconnect: re-establishes the backend connection then remounts the terminal. */
   onReconnectTab?: (tabId: string) => void | Promise<void>;
   /** Close tab and tear down backend sessions (SSH/SFTP/FTP/desktop). */
   onCloseTab?: (tabId: string) => void | Promise<void>;
   /** Close many tabs with backend cleanup for each. */
   onCloseTabs?: (tabIds: string[]) => void | Promise<void>;
+  /** Reports a terminal's remote working directory without coupling it to the file browser. */
+  onWorkingDirectoryChange?: (connectionId: string, path: string) => void;
 }
 
 const TerminalCallbacksContext = createContext<TerminalCallbacks>({});

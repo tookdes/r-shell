@@ -4,6 +4,7 @@ mod desktop_protocol;
 mod ftp_client;
 mod host_key_prompt;
 mod known_hosts;
+mod ls_parser;
 mod os_detect;
 mod proxy_stream;
 mod rdp_client;
@@ -78,7 +79,7 @@ fn build_app_menu<F: Fn(&str) -> String>(
                 "close_connection",
                 t("menuBar.closeTab"),
                 true,
-                None::<&str>,
+                Some("CmdOrCtrl+W"),
             )?,
         ],
     )?;
@@ -329,6 +330,7 @@ pub fn run() {
             // Unified file operation commands
             commands::list_remote_files,
             commands::download_remote_file,
+            commands::download_remote_file_confined,
             commands::upload_remote_file,
             commands::delete_remote_item,
             commands::create_remote_directory,
@@ -339,6 +341,7 @@ pub fn run() {
             commands::delete_local_item,
             commands::rename_local_item,
             commands::create_local_directory,
+            commands::create_local_directory_confined,
             commands::open_in_os,
             commands::stat_local_path,
             // Directory synchronization commands

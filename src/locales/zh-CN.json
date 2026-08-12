@@ -50,6 +50,7 @@
     "connectionFailed": "连接失败",
     "connectionError": "连接错误",
     "connectionErrorDesc": "连接时发生意外错误。",
+    "waitingForConnection": "等待连接...",
     "cannotDuplicate": "无法复制标签页",
     "cannotDuplicateDesc": "未找到连接数据，请创建新连接。",
     "cannotReconnect": "无法重新连接",
@@ -76,6 +77,13 @@
     "logMonitor": "日志监视器",
     "quickConnected": "快速连接成功",
     "quickConnectedDesc": "已连接到 {{name}}",
+    "connectionNotFound": "未找到连接",
+    "connectionNotFoundDesc1": "无法加载连接数据。",
+    "connectionNotFoundDesc2": "找不到该连接，它可能已被删除。",
+    "alreadyConnected": "已连接",
+    "alreadyConnectedDesc": "已切换到现有的 {{name}} 连接",
+    "terminal": "终端",
+    "fileBrowser": "文件浏览器",
     "workspaceRestore": "工作区恢复",
     "bringingConnectionsOnline": "正在恢复你的连接",
     "preparingSavedConnections": "正在准备已保存的连接",
@@ -199,6 +207,7 @@
     "allConnections": "所有连接",
     "button": {
       "cancel": "取消",
+      "save": "保存",
       "stop": "停止",
       "cancelling": "取消中...",
       "connecting": "连接中...",
@@ -281,7 +290,10 @@
       "foldGutter": "代码折叠",
       "foldGutterDesc": "在侧边栏显示折叠/展开箭头",
       "bracketMatching": "括号匹配",
-      "bracketMatchingDesc": "当光标位于括号旁边时高亮匹配的括号"
+      "bracketMatchingDesc": "当光标位于括号旁边时高亮匹配的括号",
+      "tabSize2": "2 个空格",
+      "tabSize4": "4 个空格",
+      "tabSize8": "8 个空格"
     },
     "connection": {
       "title": "连接设置",
@@ -296,12 +308,12 @@
       "title": "安全设置",
       "desc": "配置安全选项和认证设置。",
       "hostKeyVerification": "主机密钥验证",
-      "hostKeyVerificationNotImplemented": "尚未实现 — 当前会接受所有服务器密钥。",
       "hostKeyVerificationDesc": "首次连接时信任主机密钥（TOFU）。密钥变更将被拒绝，确认服务器后需清除 known_hosts 条目。",
       "savePasswords": "保存密码",
       "savePasswordsDesc": "在本地存储密码（加密）",
       "autoLockTimeout": "自动锁定超时：{{timeout}}分钟",
       "autoLockTimeoutDesc": "在此无活动时间后自动锁定应用程序",
+      "hostKeyVerificationNotImplemented": "尚未实现 — 当前会接受所有服务器密钥。",
       "autoLockTimeoutNotImplemented": "尚未实现 — 自动锁定当前不可用。",
       "clearKnownHosts": "清除已存储的主机密钥",
       "clearKnownHostsDesc": "删除指定主机的记忆密钥，下次连接将重新提示确认。",
@@ -395,7 +407,9 @@
       "warn": "警告",
       "info": "信息",
       "debug": "调试"
-    }
+    },
+    "tabScrollLeft": "向左滚动",
+    "tabScrollRight": "向右滚动"
   },
   "welcome": {
     "quickTips": "快速提示",
@@ -529,6 +543,7 @@
     },
     "contextMenu": {
       "download": "下载",
+      "downloadDirectory": "下载目录",
       "upload": "上传",
       "rename": "重命名",
       "delete": "删除",
@@ -544,7 +559,12 @@
       "openInLogMonitor": "在日志监视器中打开",
       "openInOS": "在系统中打开",
       "uploadFolder": "上传文件夹",
-      "syncDirectories": "同步目录"
+      "syncDirectories": "同步目录",
+      "open": "打开",
+      "edit": "编辑",
+      "openFolder": "打开文件夹",
+      "pasteWithCount_one": "粘贴 {{count}} 个项目",
+      "pasteWithCount_other": "粘贴 {{count}} 个项目"
     },
     "toast": {
       "queuedUpload_one": "已排队 {{count}} 个文件等待上传",
@@ -577,6 +597,7 @@
       "pathCopied": "路径已复制到剪贴板",
       "loadFailed": "加载文件失败",
       "loadFailedDesc": "无法加载远程目录内容。",
+      "followDirectoryFailed": "无法跟随终端目录 {{path}}",
       "pasteFailed": "粘贴文件失败",
       "pasteFailedDesc": "无法完成粘贴操作。",
       "uploadFolderFailed": "文件夹上传失败",
@@ -591,13 +612,15 @@
       "droppedPathsSkipped_other": "{{count}} 个拖放路径无法上传",
       "queuedUploadToPath": "已排队 {{count}} 个文件等待上传到 {{path}}",
       "enterFolderName": "请输入文件夹名称：",
-      "enterFileName": "请输入文件名称："
+      "enterFileName": "请输入文件名称：",
+      "fileInfo": "文件：{{name}}\n大小：{{size}}\n修改时间：{{modified}}\n权限：{{permissions}}"
     },
     "toolbar": {
       "back": "后退",
       "forward": "前进",
       "parentDir": "上级目录",
       "home": "首页",
+      "followTerminalDirectory": "跟随终端目录",
       "refresh": "刷新",
       "newFolder": "新建文件夹",
       "newFile": "新建文件",
@@ -642,7 +665,9 @@
       "cancelled": "已取消",
       "upload": "上传",
       "download": "下载"
-    }
+    },
+    "dropOverlay": "拖放文件或文件夹以上传",
+    "dropUploadTo": "上传到 {{path}}"
   },
   "contextMenu": {
     "copy": "复制",
@@ -684,7 +709,24 @@
     "downloadFailedDesc": "无法下载更新，请稍后重试。",
     "checkFailed": "检查失败",
     "checkFailedDesc": "无法检查更新，请稍后重试。",
+    "errorNotConfigured": "更新服务器未针对此版本进行配置。",
+    "errorNetwork": "无法连接到更新服务器，请检查您的网络连接。",
+    "errorVerification": "更新验证失败，请稍后重试。",
     "installFailed": "安装失败",
+    "installFailedDesc": "无法安装更新，请稍后重试。",
+    "readyToInstall": "更新已就绪，可安装",
+    "readyToDownload": "版本 {{version}} 已准备好下载。",
+    "newVersionAvailable": "有新版本可用。",
+    "newVersionBody": "有新版本可用，包含改进与修复。",
+    "restartToFinish": "更新已下载，立即重启以完成安装。",
+    "later": "稍后",
+    "restartNow": "立即重启",
+    "restarting": "正在重启…",
+    "downloadUpdate": "下载更新",
+    "downloadingButton": "正在下载…",
+    "checkFailedFallback": "检查更新失败。",
+    "downloadFailedFallback": "更新下载失败。",
+    "installFailedFallback": "更新安装失败。",
     "availableFallback": "新版本可用，包含改进和修复。"
   },
   "syncDialog": {
@@ -724,7 +766,48 @@
     "actionCreateDir": "创建目录",
     "actionDelete": "删除",
     "actionIdentical": "相同",
-    "actionConflict": "冲突"
+    "actionConflict": "冲突",
+    "localDirectory": "本地目录",
+    "remoteDirectory": "远程目录",
+    "directionLocalToRemote": "本地 → 远程",
+    "directionRemoteToLocal": "远程 → 本地",
+    "compareBy": "比较方式",
+    "criteriaSize": "仅比较大小",
+    "criteriaDate": "仅比较日期",
+    "criteriaSizeDate": "大小 + 日期",
+    "recursive": "递归（包含子目录）",
+    "deleteOrphaned": "删除远程孤立文件",
+    "exclude": "排除",
+    "selectAll": "全选",
+    "deselectAll": "取消全选",
+    "showIdentical": "显示相同项",
+    "columnPath": "路径",
+    "columnAction": "操作",
+    "columnLocal": "本地",
+    "columnRemote": "远程",
+    "runComparisonHint": "运行比较以查看差异",
+    "allIdentical": "所有文件均相同",
+    "comparing": "正在比较目录…",
+    "syncItems": "同步（{{count}} 个项目）",
+    "toastFailed": "失败：{{path}}",
+    "toastComplete": "同步完成：已同步 {{count}} 个项目",
+    "toastFinishedWithErrors": "同步完成，共 {{processedItems}} 个项目中有 {{errorCount}} 个错误",
+    "badgeUpload_one": "{{count}} 个上传",
+    "badgeUpload_other": "{{count}} 个上传",
+    "badgeMkdir_one": "{{count}} 个新建目录",
+    "badgeMkdir_other": "{{count}} 个新建目录",
+    "badgeDelete_one": "{{count}} 个删除",
+    "badgeDelete_other": "{{count}} 个删除",
+    "badgeDownload_one": "{{count}} 个下载",
+    "badgeDownload_other": "{{count}} 个下载",
+    "badgeIdentical_one": "{{count}} 个相同",
+    "badgeIdentical_other": "{{count}} 个相同",
+    "badgeConflict_one": "{{count}} 个冲突",
+    "badgeConflict_other": "{{count}} 个冲突",
+    "badgeTotal": "共 {{size}}",
+    "compareButton": "比较",
+    "syncingItem": "正在同步：{{item}}",
+    "recompareButton": "重新比较"
   },
   "directoryTransfer": {
     "title": "目录传输",
@@ -792,19 +875,19 @@
     "cannotMoveIntoOwn": "无法将文件夹移动到其自身的子文件夹中",
     "movedConnection": "已将 \"{{source}}\" 移动到 \"{{target}}\"",
     "failedToMoveConnection": "移动连接失败",
-    "reorderedConnection": "已重新排序：{{name}}",
-    "sortByName": "按名称排序",
-    "sortedFolderByName": "已将「{{name}}」按名称排序",
-    "failedToSortFolder": "排序失败",
     "movedFolder": "已将文件夹 \"{{source}}\" 移动到 \"{{target}}\"",
     "failedToMoveFolder": "移动文件夹失败",
     "unableToMoveFolder": "无法将文件夹移动到新位置。",
     "noConnectionsYet": "暂无连接",
     "connectionDetails": "连接详情",
-    "dragToMove": "拖动以移动或排序",
     "noConnectionSelected": "未选择连接",
     "movedToRoot": "已将\"{{name}}\"移动到所有连接",
-    "failedToReorder": "重新排序失败"
+    "failedToReorder": "重新排序失败",
+    "reorderedConnection": "已重新排序：{{name}}",
+    "sortByName": "按名称排序",
+    "sortedFolderByName": "已将「{{name}}」按名称排序",
+    "failedToSortFolder": "排序失败",
+    "dragToMove": "拖动以移动或排序"
   },
   "filePanel": {
     "selectDirectory": "选择目录以查看其内容",
@@ -908,7 +991,6 @@
     }
   },
   "statusBar": {
-    "pending": "等待中",
     "connected": "已连接",
     "disconnected": "未连接",
     "connecting": "连接中...",
@@ -917,7 +999,8 @@
     "uptime": "运行时间：{{time}}",
     "cpu": "CPU：{{percent}}%",
     "memory": "内存：{{used}}/{{total}}",
-    "ready": "就绪"
+    "ready": "就绪",
+    "pending": "等待中"
   },
   "transferQueue": {
     "title": "传输队列",
@@ -1012,11 +1095,11 @@
     "copiedToClipboard": "已复制到剪贴板",
     "failedToCopyClipboard": "复制到剪贴板失败",
     "reconnectingTerminal": "正在重新连接终端…",
+    "outputSaved": "终端输出已保存",
+    "failedToSaveOutput": "保存输出失败",
     "connectionClosedManualReconnect": "连接已关闭。按 R 重连，或右键选择“重新连接”。",
     "autoReconnectFailed": "连接已断开，自动重连 {{count}} 次后仍然失败。按 R 重连，或右键选择“重新连接”。",
     "connectionFailedPermanently": "连接永久失败。按 R 重连，或右键选择“重新连接”。",
-    "outputSaved": "终端输出已保存",
-    "failedToSaveOutput": "保存输出失败",
     "previousSessionLost": "先前会话已丢失，已启动新的 shell 会话。",
     "ptyStarted": "PTY 连接已启动",
     "interactiveCommandsHint": "现在可以使用交互式命令：vim、less、more、top 等。",
@@ -1157,6 +1240,27 @@
     "desktopDisconnected": "桌面已断开",
     "reconnect": "重新连接",
     "connectingTo": "正在连接到 {{name}}..."
+  },
+  "errorBoundary": {
+    "somethingWentWrong": "出错了",
+    "unexpectedError": "发生了意外错误",
+    "retry": "重试",
+    "labelError": "{{label}} 遇到错误"
+  },
+  "connectionTabs": {
+    "reconnect": "重新连接",
+    "duplicateTab": "复制标签页",
+    "closeTab": "关闭标签页",
+    "closeOtherTabs": "关闭其他标签页",
+    "closeTabsToLeft": "关闭左侧标签页",
+    "closeTabsToRight": "关闭右侧标签页",
+    "closeAllTabs": "关闭所有标签页"
+  },
+  "networkMonitor": {
+    "title": "网络统计",
+    "noConnection": "无活动连接，连接后即可查看网络统计。",
+    "comingSoon": "高级网络监控功能即将推出",
+    "disabledNotice": "网络接口和活动连接监控当前已禁用。请查看「监控」选项卡中的网络使用率和网络延迟图表以获取当前网络指标。"
   },
   "hostKey": {
     "title": "验证主机密钥",

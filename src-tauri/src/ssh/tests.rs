@@ -23,6 +23,8 @@ mod tests {
             verify_host_key: false,
             proxy: None,
             startup_command: None,
+            compression: true,
+            keepalive_max: None,
         }
     }
 
@@ -105,6 +107,8 @@ mod tests {
             verify_host_key: false,
             proxy: None,
             startup_command: None,
+            compression: true,
+            keepalive_max: None,
         };
 
         let result = client_write.connect(&config).await;
@@ -171,6 +175,179 @@ mod tests {
 
         // Disconnect
         client_write.disconnect().await.ok();
+    }
+}
+
+#[cfg(test)]
+mod shell_integration_tests {
+    use crate::sftp_client::list_sftp_dir;
+    use crate::ssh::{
+        bash_shell_integration_command, bash_version_from_probe, AuthMethod, BashVersion,
+        PtySession, SshClient, SshConfig,
+    };
+    use std::time::Duration;
+    use tokio::time::{timeout, Instant};
+
+    #[test]
+    fn parses_major_and_minor_from_bash_probe_results() {
+        assert_eq!(
+            bash_version_from_probe("__RSHELL_BASH_VERSION__5.2.37(1)-release"),
+            Some(BashVersion { major: 5, minor: 2 })
+        );
+        assert_eq!(
+            bash_version_from_probe("profile output\n__RSHELL_BASH_VERSION__4.4.20(1)-release"),
+            Some(BashVersion { major: 4, minor: 4 })
+        );
+        assert_eq!(
+            bash_version_from_probe("__RSHELL_BASH_VERSION__5.1.0"),
+            Some(BashVersion { major: 5, minor: 1 })
+        );
+    }
+
+    #[test]
+    fn rejects_missing_or_malformed_bash_probe_results() {
+        for output in [
+            "__RSHELL_BASH_VERSION__",
+            "__RSHELL_BASH_VERSION__five.two",
+            "__RSHELL_BASH_VERSION__5",
+            "5.2.37",
+        ] {
+            assert_eq!(bash_version_from_probe(output), None, "output: {output:?}");
+        }
+    }
+
+    #[test]
+    fn uses_scalar_prompt_command_before_bash_5_1() {
+        for version in [
+            BashVersion { major: 3, minor: 2 },
+            BashVersion { major: 4, minor: 4 },
+            BashVersion { major: 5, minor: 0 },
+        ] {
+            let command = String::from_utf8(bash_shell_integration_command(version)).unwrap();
+            assert!(command.contains("PROMPT_COMMAND+=$'\\n__rshell_report_cwd'"));
+            assert!(!command.contains("PROMPT_COMMAND=(\"${PROMPT_COMMAND[@]}\""));
+        }
+    }
+
+    #[test]
+    fn uses_prompt_command_array_from_bash_5_1() {
+        for version in [
+            BashVersion { major: 5, minor: 1 },
+            BashVersion { major: 5, minor: 2 },
+            BashVersion { major: 6, minor: 0 },
+        ] {
+            let command = String::from_utf8(bash_shell_integration_command(version)).unwrap();
+            assert!(
+                command.contains("PROMPT_COMMAND=(\"${PROMPT_COMMAND[@]}\" __rshell_report_cwd)")
+            );
+        }
+    }
+
+    #[test]
+    fn shell_integration_restores_echo_and_emits_osc_7() {
+        for version in [
+            BashVersion { major: 4, minor: 4 },
+            BashVersion { major: 5, minor: 2 },
+        ] {
+            let command = bash_shell_integration_command(version);
+            assert!(command.starts_with(b" stty echo;"));
+            assert!(!command
+                .windows(b"history -d".len())
+                .any(|window| window == b"history -d"));
+            assert!(command
+                .windows(b"]7;file://".len())
+                .any(|window| window == b"]7;file://"));
+            assert!(command.ends_with(b"\n"));
+        }
+    }
+
+    async fn read_until(pty: &PtySession, needle: &[u8]) -> Vec<u8> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut output = Vec::new();
+        while !output.windows(needle.len()).any(|window| window == needle) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "timed out waiting for PTY output");
+            let chunk = timeout(remaining, async { pty.output_rx.lock().await.recv().await })
+                .await
+                .expect("timed out waiting for PTY output")
+                .expect("PTY output channel closed");
+            output.extend_from_slice(&chunk);
+        }
+        output
+    }
+
+    async fn send_and_expect_cwd(pty: &PtySession, command: &str, expected_path: &str) {
+        let mut input = command.as_bytes().to_vec();
+        input.push(b'\n');
+        pty.input_tx.send(input).await.expect("send shell command");
+
+        let output = read_until(pty, b"\x1b\\").await;
+        assert!(
+            String::from_utf8_lossy(&output).contains(expected_path),
+            "OSC 7 output should contain {expected_path:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn docker_ssh_reports_cwd_and_lists_sftp_directories() {
+        let mut client = SshClient::new();
+        client
+            .connect(&SshConfig {
+                host: std::env::var("RSHELL_TEST_SSH_HOST")
+                    .unwrap_or_else(|_| "rshell-test-ssh".to_string()),
+                port: 22,
+                username: "testuser".to_string(),
+                auth_method: AuthMethod::Password {
+                    password: "testpass".to_string(),
+                },
+                connection_timeout_secs: Some(30),
+                keepalive_interval_secs: Some(60),
+                verify_host_key: false,
+                proxy: None,
+                startup_command: None,
+                compression: true,
+                keepalive_max: Some(3),
+            })
+            .await
+            .expect("connect to Docker SSH server");
+
+        let pty = client.create_pty_session(80, 24).await.expect("create PTY");
+        let initial_output = read_until(&pty, b"\x1b\\").await;
+        assert!(
+            String::from_utf8_lossy(&initial_output).contains("/home/testuser"),
+            "initial OSC 7 should report the login directory"
+        );
+
+        send_and_expect_cwd(
+            &pty,
+            "cd '/srv/release files/子目录'",
+            "/srv/release%20files/子目录",
+        )
+        .await;
+        send_and_expect_cwd(&pty, "cd ..", "/srv/release%20files").await;
+        send_and_expect_cwd(&pty, "cd '子目录'", "/srv/release%20files/子目录").await;
+        send_and_expect_cwd(&pty, "cd -", "/srv/release%20files").await;
+        send_and_expect_cwd(&pty, "cd ~", "/home/testuser").await;
+        send_and_expect_cwd(
+            &pty,
+            "pushd '/srv/release files/子目录'",
+            "/srv/release%20files/子目录",
+        )
+        .await;
+        send_and_expect_cwd(&pty, "popd", "/home/testuser").await;
+
+        let sftp = client.open_sftp_session().await.expect("open SFTP");
+        let root_entries = list_sftp_dir(&sftp, "/srv/release files")
+            .await
+            .expect("list directory over SFTP");
+        assert!(root_entries.iter().any(|entry| entry.name == "子目录"));
+        let nested_entries = list_sftp_dir(&sftp, "/srv/release files/子目录")
+            .await
+            .expect("list nested directory over SFTP");
+        assert!(nested_entries
+            .iter()
+            .any(|entry| entry.name == "report 1.txt"));
     }
 }
 
@@ -266,6 +443,8 @@ mod key_loading_tests {
             verify_host_key: false,
             proxy: None,
             startup_command: None,
+            compression: true,
+            keepalive_max: None,
         };
 
         let mut client = SshClient::new();
@@ -363,5 +542,51 @@ mod key_loading_tests {
             }
         }
         key_path.to_string()
+    }
+}
+
+#[cfg(test)]
+mod compression_pref_tests {
+    use crate::ssh::compression_preferences;
+    use russh::compression::{NONE, ZLIB, ZLIB_LEGACY};
+
+    /// Mirror russh's client-side negotiation: pick the first algorithm in our
+    /// preferred list that the server also advertises (see negotiation.rs).
+    fn negotiate<'a>(
+        our_list: &'a [russh::compression::Name],
+        server_list: &str,
+    ) -> Option<&'a str> {
+        for ours in our_list {
+            if server_list.split(',').any(|s| s == ours.as_ref()) {
+                return Some(ours.as_ref());
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn enabled_prefers_zlib_over_none() {
+        let prefs = compression_preferences(true);
+        assert_eq!(
+            prefs[0], ZLIB,
+            "zlib must come before none or russh picks none"
+        );
+        assert!(prefs.contains(&ZLIB_LEGACY));
+        assert!(prefs.contains(&NONE));
+
+        // OpenSSH with `Compression delayed` advertises none,zlib@openssh.com.
+        assert_eq!(
+            negotiate(prefs, "none,zlib@openssh.com"),
+            Some("zlib@openssh.com")
+        );
+        // OpenSSH with `Compression yes` advertises none,zlib.
+        assert_eq!(negotiate(prefs, "none,zlib"), Some("zlib"));
+    }
+
+    #[test]
+    fn disabled_only_offers_none() {
+        let prefs = compression_preferences(false);
+        assert_eq!(prefs, &[NONE]);
+        assert_eq!(negotiate(prefs, "none,zlib@openssh.com"), Some("none"));
     }
 }

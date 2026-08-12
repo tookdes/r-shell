@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { X, Plus, XCircle, ArrowRight, ArrowLeft, Copy, RefreshCw } from 'lucide-react';
 import { Button } from './ui/button';
 import {
@@ -6,8 +7,10 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuShortcut,
   ContextMenuTrigger,
 } from './ui/context-menu';
+import { DEFAULT_APP_KEYBOARD_SHORTCUTS, formatKeyboardShortcut } from '@/lib/keyboard-shortcuts';
 
 interface ConnectionTab {
   id: string;
@@ -42,6 +45,16 @@ export function ConnectionTabs({
   onCloseToRight,
   onCloseToLeft
 }: ConnectionTabsProps) {
+  const { t } = useTranslation();
+  const duplicateTabShortcut = formatKeyboardShortcut(
+    'Ctrl+D',
+    navigator.platform.toUpperCase().includes('MAC'),
+  );
+  const closeTabShortcut = formatKeyboardShortcut(
+    DEFAULT_APP_KEYBOARD_SHORTCUTS.closeSession,
+    navigator.platform.toUpperCase().includes('MAC'),
+  );
+
   return (
     <div className="bg-muted border-b border-border flex items-center">
       <div className="flex items-center overflow-x-auto">
@@ -85,7 +98,7 @@ export function ConnectionTabs({
                 <>
                   <ContextMenuItem onClick={() => onReconnect(tab.id)}>
                     <RefreshCw className="mr-2 h-4 w-4" />
-                    Reconnect
+                    {t('connectionTabs.reconnect')}
                   </ContextMenuItem>
                   <ContextMenuSeparator />
                 </>
@@ -94,32 +107,34 @@ export function ConnectionTabs({
                 <>
                   <ContextMenuItem onClick={() => onDuplicateTab(tab.id)}>
                     <Copy className="mr-2 h-4 w-4" />
-                    Duplicate Tab
+                    {t('connectionTabs.duplicateTab')}
+                    <ContextMenuShortcut>{duplicateTabShortcut}</ContextMenuShortcut>
                   </ContextMenuItem>
                   <ContextMenuSeparator />
                 </>
               )}
               <ContextMenuItem onClick={() => onTabClose(tab.id)}>
                 <X className="mr-2 h-4 w-4" />
-                Close Tab
+                {t('connectionTabs.closeTab')}
+                <ContextMenuShortcut>{closeTabShortcut}</ContextMenuShortcut>
               </ContextMenuItem>
               {onCloseOthers && tabs.length > 1 && (
                 <ContextMenuItem onClick={() => onCloseOthers(tab.id)}>
                   <XCircle className="mr-2 h-4 w-4" />
-                  Close Other Tabs
+                  {t('connectionTabs.closeOtherTabs')}
                 </ContextMenuItem>
               )}
               <ContextMenuSeparator />
               {onCloseToLeft && index > 0 && (
                 <ContextMenuItem onClick={() => onCloseToLeft(tab.id)}>
                   <ArrowLeft className="mr-2 h-4 w-4" />
-                  Close Tabs to the Left
+                  {t('connectionTabs.closeTabsToLeft')}
                 </ContextMenuItem>
               )}
               {onCloseToRight && index < tabs.length - 1 && (
                 <ContextMenuItem onClick={() => onCloseToRight(tab.id)}>
                   <ArrowRight className="mr-2 h-4 w-4" />
-                  Close Tabs to the Right
+                  {t('connectionTabs.closeTabsToRight')}
                 </ContextMenuItem>
               )}
               {onCloseAll && tabs.length > 0 && (
@@ -127,7 +142,7 @@ export function ConnectionTabs({
                   <ContextMenuSeparator />
                   <ContextMenuItem onClick={onCloseAll}>
                     <XCircle className="mr-2 h-4 w-4" />
-                    Close All Tabs
+                    {t('connectionTabs.closeAllTabs')}
                   </ContextMenuItem>
                 </>
               )}

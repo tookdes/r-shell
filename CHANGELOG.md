@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.0] - 2026-08-08
+
+### 🖥️ R-Shell 2.7 — Terminal-Integrated File Browser & Connections
+
+This release integrates the file browser with the terminal by following the active terminal's working directory and adding directory downloads, makes advanced SSH and proxy options actually apply to live connections and persist across saves and reconnects, and adds password visibility toggles to the connection dialog. It also updates keyboard shortcuts with improved tab management, hardens directory downloads and legacy bash hooks, and wires the Edit menu to the active terminal.
+
+### Added
+
+- 🖥️ **File Browser Follows Terminal CWD**: The integrated file browser now follows the active terminal's working directory, and directories can be downloaded directly
+- 👁️ **Password Visibility Toggles**: Added show/hide toggles to the password fields in the connection dialog so credentials can be reviewed before saving (#77)
+- ⌨️ **Keyboard Shortcuts & Tab Management**: Updated keyboard shortcuts and improved tab management functionality
+
+### Fixed
+
+- 🔌 **Advanced SSH & Proxy Options on Live Connections**: Advanced SSH and proxy options are now applied to live connections instead of being dropped (#73)
+- 💾 **Proxy Config Persistence**: Proxy configuration now persists across saves and reconnects (#72)
+- 🖥️ **Edit Menu Targets Active Terminal**: The Edit menu commands are now wired to the active terminal
+- 🔒 **Secure Directory Downloads & Legacy Bash Hooks**: Hardened directory downloads and legacy bash hooks, and polished the sync button/icon styling
+
+### Contributors
+
+Thanks to [@htazq](https://github.com/htazq), [@sunxiaobin89](https://github.com/sunxiaobin89), and [@GOODBOY008](https://github.com/GOODBOY008) for contributing to this release! 🙏
+
+## [2.6.0] - 2026-07-30
+
+### 🔗 R-Shell 2.6 — Connection Management, Clipboard & Update Flexibility
+
+This release brings pointer-based drag-and-drop reordering to the connection sidebar (folders and connections, across parents), adds a "New Connection" entry to the folder context menu, integrates the Tauri clipboard manager plugin for more reliable cross-platform clipboard handling, and adds configurable update proxy support. It also fixes SSH file list corruption on non-GNU hosts, a number of connection-dialog and sidebar interaction bugs, and a stuck-text-selection issue in the terminal on WKWebView.
+
+### Added
+
+- 🖱️ **Pointer-Based Connection Reordering**: Implemented pointer-event drag-and-drop to reorder folders and connections in the sidebar, with drag ghosts, before/after/inside drop indicators, invalid-drop prevention (e.g. moving a folder into its own subtree), and success/error toasts — replacing the previous HTML5 drag-and-drop implementation
+- ➕ **New Connection in Folder Context Menu**: Added a "New Connection" entry to the folder right-click menu so connections can be created directly inside a target folder (#59)
+- 📋 **Tauri Clipboard Manager Integration**: Integrated the `@tauri-apps/plugin-clipboard-manager` plugin for clipboard operations, replacing `navigator.clipboard` usage for more reliable clipboard behavior on Windows and macOS
+- 🔄 **Configurable Update Proxy**: Added support for a configurable update proxy so updates can be fetched through a user-defined proxy (#51)
+
+### Changed
+
+- 🧪 **CI Frontend Test Step**: Added a frontend Vitest step (`pnpm test`) to the test workflow matrix, excluding the integration-only `connection.test.ts` from the unit suite (#55)
+
+### Fixed
+
+- 🗂️ **SSH File List Corruption on Non-GNU Hosts**: Resolved file list corruption in the SSH file browser on non-GNU hosts caused by parsing incompatibilities (#68)
+- 🛠️ **Edit Connection Tab Sync & Save Flow**: Improved tab synchronization, credential handling, and the save flow in the edit-connection dialog (#67)
+- 🌳 **Sidebar Folder Click Selection**: Fixed folder clicks not selecting the node and right-click expanding unrelated nodes in the sidebar (#61)
+- 🔢 **Connection Dialog Number Input Override**: Prevented number inputs in the connection dialog from overriding values with defaults when cleared (#62)
+- ✋ **WKWebView Text Selection Stuck**: Fixed a stuck text-selection issue in the PTY terminal on WKWebView by tracking mouse-drag state and dispatching a synthetic mouseup when the native event is swallowed, and disabled right-click word selection by default
+
 ## [2.5.1] - 2026-07-16
 
 ### 🔧 R-Shell 2.5.1 — Input Hardening & UI Polish
