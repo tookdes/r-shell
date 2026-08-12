@@ -28,6 +28,7 @@ vi.mock('../components/ui/button', () => ({
 
 vi.mock('../components/ui/context-menu', () => ({
   ContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  ContextMenuShortcut: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   ContextMenuContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   ContextMenuItem: ({ children, onClick }: { children: React.ReactNode; onClick?: () => void }) => (
     <button type="button" onClick={onClick}>

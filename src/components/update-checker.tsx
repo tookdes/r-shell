@@ -86,7 +86,7 @@ export function UpdateChecker({ checkSignal }: UpdateCheckerProps) {
     setError(null);
 
     if (manual) {
-      toast.loading('Checking for updates…', { id: 'update-check' });
+      toast.loading(t('updateChecker.checking'), { id: 'update-check' });
     }
 
     try {
@@ -104,7 +104,7 @@ export function UpdateChecker({ checkSignal }: UpdateCheckerProps) {
       } else {
         setStatus('idle');
         if (manual) {
-          toast.success('You are up to date.');
+          toast.success(t('updateChecker.upToDate'));
         }
       }
     } catch (caught) {
@@ -112,7 +112,7 @@ export function UpdateChecker({ checkSignal }: UpdateCheckerProps) {
         toast.dismiss('update-check');
       }
 
-      const raw = caught instanceof Error ? caught.message : 'Failed to check for updates.';
+      const raw = caught instanceof Error ? caught.message : t('updateChecker.checkFailedFallback');
       // Tauri updater throws when the endpoint is unreachable or returns invalid
       // data. Map the common Rust error substrings to friendlier messages.
       const lower = raw.toLowerCase();
@@ -120,23 +120,23 @@ export function UpdateChecker({ checkSignal }: UpdateCheckerProps) {
         raw === 'Invalid update proxy URL'
           ? t('settings.advanced.updateProxyInvalid')
           : lower.includes('404') || lower.includes('not found')
-          ? 'Update server is not configured for this version.'
+          ? t('updateChecker.errorNotConfigured')
           : lower.includes('network') ||
               lower.includes('dns') ||
               lower.includes('timeout') ||
               lower.includes('connection refused') ||
               lower.includes('failed to connect')
-            ? 'Could not reach the update server. Check your internet connection.'
+            ? t('updateChecker.errorNetwork')
             : lower.includes('signature') ||
                 lower.includes('verify') ||
                 lower.includes('verification') ||
                 lower.includes('invalid')
-              ? 'Update verification failed. Please try again later.'
+              ? t('updateChecker.errorVerification')
               : raw;
       setStatus('error');
       setError(message);
       if (manual) {
-        toast.error('Update check failed', { description: message });
+        toast.error(t('updateChecker.checkFailed'), { description: message });
       }
     }
   }, [t]);
@@ -175,12 +175,12 @@ export function UpdateChecker({ checkSignal }: UpdateCheckerProps) {
 
       setStatus('ready');
     } catch (caught) {
-      const message = caught instanceof Error ? caught.message : 'Failed to download update.';
+      const message = caught instanceof Error ? caught.message : t('updateChecker.downloadFailedFallback');
       setStatus('error');
       setError(message);
-      toast.error('Update failed', { description: message });
+      toast.error(t('updateChecker.downloadFailed'), { description: message });
     }
-  }, [updateInfo]);
+  }, [updateInfo, t]);
 
   const handleInstall = useCallback(async () => {
     if (!updateInfo) {
@@ -197,17 +197,16 @@ export function UpdateChecker({ checkSignal }: UpdateCheckerProps) {
       // in that case so calling it is safe.
       await relaunch();
     } catch (caught) {
-      const message = caught instanceof Error ? caught.message : 'Failed to install update.';
+      const message = caught instanceof Error ? caught.message : t('updateChecker.installFailedFallback');
       setStatus('error');
       setError(message);
       toast.error(t('updateChecker.installFailed'), { description: message });
     }
-  }, [updateInfo]);
+  }, [updateInfo, t]);
 
   useEffect(() => {
     if (isAutoCheckEnabled()) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: check once on mount
-      void checkForUpdates(false);
+      checkForUpdates(false);
     }
   }, [checkForUpdates]);
 
@@ -215,18 +214,18 @@ export function UpdateChecker({ checkSignal }: UpdateCheckerProps) {
     if (typeof checkSignal === 'number') {
       if (lastSignalRef.current !== checkSignal) {
         lastSignalRef.current = checkSignal;
-        void checkForUpdates(true);
+        checkForUpdates(true);
       }
     }
   }, [checkSignal, checkForUpdates]);
 
   const notes = useMemo(() => {
     if (!updateInfo?.body) {
-      return t('updateChecker.availableFallback');
+      return t('updateChecker.newVersionBody');
     }
 
     return updateInfo.body;
-  }, [updateInfo?.body]);
+  }, [updateInfo?.body, t]);
 
   const onDialogOpenChange = useCallback(
     (open: boolean) => {
@@ -248,12 +247,12 @@ export function UpdateChecker({ checkSignal }: UpdateCheckerProps) {
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>
-            {status === 'ready' ? 'Update ready to install' : t('updateChecker.updateAvailable')}
+            {status === 'ready' ? t('updateChecker.readyToInstall') : t('updateChecker.updateAvailable')}
           </AlertDialogTitle>
           <AlertDialogDescription>
             {updateInfo?.version
-              ? `Version ${updateInfo.version} is ready to download.`
-              : 'A new version is available.'}
+              ? t('updateChecker.readyToDownload', { version: updateInfo.version })
+              : t('updateChecker.newVersionAvailable')}
           </AlertDialogDescription>
         </AlertDialogHeader>
 
@@ -273,7 +272,7 @@ export function UpdateChecker({ checkSignal }: UpdateCheckerProps) {
           )}
           {readyToInstall && (
             <p className="text-sm text-muted-foreground">
-              The update has been downloaded. Restart now to finish installing.
+              {t('updateChecker.restartToFinish')}
             </p>
           )}
         </div>
@@ -285,16 +284,16 @@ export function UpdateChecker({ checkSignal }: UpdateCheckerProps) {
               onClick={() => setDialogOpen(false)}
               disabled={busy}
             >
-              Later
+              {t('updateChecker.later')}
             </Button>
           )}
           {readyToInstall ? (
             <Button onClick={handleInstall} disabled={status === 'installing'}>
-              {status === 'installing' ? 'Restarting…' : 'Restart now'}
+              {status === 'installing' ? t('updateChecker.restarting') : t('updateChecker.restartNow')}
             </Button>
           ) : (
             <Button onClick={handleDownload} disabled={busy}>
-              {status === 'downloading' ? 'Downloading…' : 'Download update'}
+              {status === 'downloading' ? t('updateChecker.downloadingButton') : t('updateChecker.downloadUpdate')}
             </Button>
           )}
         </AlertDialogFooter>

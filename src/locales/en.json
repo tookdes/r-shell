@@ -50,6 +50,7 @@
     "connectionFailed": "Connection Failed",
     "connectionError": "Connection Error",
     "connectionErrorDesc": "An unexpected error occurred while connecting.",
+    "waitingForConnection": "Waiting for connection...",
     "cannotDuplicate": "Cannot Duplicate Tab",
     "cannotDuplicateDesc": "Connection data not found. Please create a new connection.",
     "cannotReconnect": "Cannot Reconnect",
@@ -76,6 +77,13 @@
     "logMonitor": "Log Monitor",
     "quickConnected": "Quick Connected",
     "quickConnectedDesc": "Connected to {{name}}",
+    "connectionNotFound": "Connection Not Found",
+    "connectionNotFoundDesc1": "The connection data could not be loaded.",
+    "connectionNotFoundDesc2": "The connection could not be found. It may have been deleted.",
+    "alreadyConnected": "Already Connected",
+    "alreadyConnectedDesc": "Switched to existing {{name}} connection",
+    "terminal": "Terminal",
+    "fileBrowser": "File Browser",
     "workspaceRestore": "Workspace Restore",
     "bringingConnectionsOnline": "Bringing your connections back online",
     "preparingSavedConnections": "Preparing saved connections",
@@ -199,6 +207,7 @@
     "allConnections": "All Connections",
     "button": {
       "cancel": "Cancel",
+      "save": "Save",
       "stop": "Stop",
       "cancelling": "Cancelling...",
       "connecting": "Connecting...",
@@ -281,7 +290,10 @@
       "foldGutter": "Code Folding",
       "foldGutterDesc": "Show fold/unfold arrows in the gutter",
       "bracketMatching": "Bracket Matching",
-      "bracketMatchingDesc": "Highlight matching brackets when the cursor is next to one"
+      "bracketMatchingDesc": "Highlight matching brackets when the cursor is next to one",
+      "tabSize2": "2 spaces",
+      "tabSize4": "4 spaces",
+      "tabSize8": "8 spaces"
     },
     "connection": {
       "title": "Connection Settings",
@@ -296,12 +308,12 @@
       "title": "Security Settings",
       "desc": "Configure security options and authentication settings.",
       "hostKeyVerification": "Host Key Verification",
-      "hostKeyVerificationNotImplemented": "Not implemented yet — all server keys are currently accepted.",
       "hostKeyVerificationDesc": "Trust new host keys on first connect (TOFU). Changed keys are rejected until you clear the known_hosts entry.",
       "savePasswords": "Save Passwords",
       "savePasswordsDesc": "Store passwords locally (encrypted)",
       "autoLockTimeout": "Auto Lock Timeout: {{timeout}} minutes",
       "autoLockTimeoutDesc": "Automatically lock the application after this period of inactivity",
+      "hostKeyVerificationNotImplemented": "Not implemented yet — all server keys are currently accepted.",
       "autoLockTimeoutNotImplemented": "Not implemented yet — auto-lock is currently unavailable.",
       "clearKnownHosts": "Clear stored host key",
       "clearKnownHostsDesc": "Remove the remembered key for a host so the next connection will re-prompt.",
@@ -395,7 +407,9 @@
       "warn": "Warning",
       "info": "Info",
       "debug": "Debug"
-    }
+    },
+    "tabScrollLeft": "Scroll left",
+    "tabScrollRight": "Scroll right"
   },
   "welcome": {
     "quickTips": "Quick Tips",
@@ -529,6 +543,7 @@
     },
     "contextMenu": {
       "download": "Download",
+      "downloadDirectory": "Download directory",
       "upload": "Upload",
       "rename": "Rename",
       "delete": "Delete",
@@ -544,7 +559,12 @@
       "openInLogMonitor": "Open in Log Monitor",
       "openInOS": "Open in OS",
       "uploadFolder": "Upload Folder",
-      "syncDirectories": "Sync Directories"
+      "syncDirectories": "Sync Directories",
+      "open": "Open",
+      "edit": "Edit",
+      "openFolder": "Open Folder",
+      "pasteWithCount_one": "Paste {{count}} item",
+      "pasteWithCount_other": "Paste {{count}} items"
     },
     "toast": {
       "queuedUpload_one": "Queued {{count}} file for upload",
@@ -577,6 +597,7 @@
       "pathCopied": "Path copied to clipboard",
       "loadFailed": "Failed to Load Files",
       "loadFailedDesc": "Unable to load remote directory contents.",
+      "followDirectoryFailed": "Could not follow terminal directory {{path}}",
       "pasteFailed": "Failed to Paste Files",
       "pasteFailedDesc": "Unable to complete paste operation.",
       "uploadFolderFailed": "Folder upload failed",
@@ -591,13 +612,15 @@
       "droppedPathsSkipped_other": "{{count}} dropped paths could not be uploaded",
       "queuedUploadToPath": "Queued {{count}} file(s) for upload to {{path}}",
       "enterFolderName": "Enter folder name:",
-      "enterFileName": "Enter file name:"
+      "enterFileName": "Enter file name:",
+      "fileInfo": "File: {{name}}\nSize: {{size}}\nModified: {{modified}}\nPermissions: {{permissions}}"
     },
     "toolbar": {
       "back": "Back",
       "forward": "Forward",
       "parentDir": "Parent directory",
       "home": "Home",
+      "followTerminalDirectory": "Follow terminal directory",
       "refresh": "Refresh",
       "newFolder": "New Folder",
       "newFile": "New File",
@@ -642,7 +665,9 @@
       "cancelled": "Cancelled",
       "upload": "Upload",
       "download": "Download"
-    }
+    },
+    "dropOverlay": "Drop files or folders to upload",
+    "dropUploadTo": "Upload to {{path}}"
   },
   "contextMenu": {
     "copy": "Copy",
@@ -684,7 +709,24 @@
     "downloadFailedDesc": "Unable to download the update. Please try again later.",
     "checkFailed": "Check Failed",
     "checkFailedDesc": "Unable to check for updates. Please try again later.",
+    "errorNotConfigured": "Update server is not configured for this version.",
+    "errorNetwork": "Could not reach the update server. Check your internet connection.",
+    "errorVerification": "Update verification failed. Please try again later.",
     "installFailed": "Install failed",
+    "installFailedDesc": "Unable to install the update. Please try again later.",
+    "readyToInstall": "Update ready to install",
+    "readyToDownload": "Version {{version}} is ready to download.",
+    "newVersionAvailable": "A new version is available.",
+    "newVersionBody": "A new version is available with improvements and fixes.",
+    "restartToFinish": "The update has been downloaded. Restart now to finish installing.",
+    "later": "Later",
+    "restartNow": "Restart now",
+    "restarting": "Restarting…",
+    "downloadUpdate": "Download update",
+    "downloadingButton": "Downloading…",
+    "checkFailedFallback": "Failed to check for updates.",
+    "downloadFailedFallback": "Failed to download update.",
+    "installFailedFallback": "Failed to install update.",
     "availableFallback": "A new version is available with improvements and fixes."
   },
   "syncDialog": {
@@ -724,7 +766,48 @@
     "actionCreateDir": "Create Dir",
     "actionDelete": "Delete",
     "actionIdentical": "Identical",
-    "actionConflict": "Conflict"
+    "actionConflict": "Conflict",
+    "localDirectory": "Local Directory",
+    "remoteDirectory": "Remote Directory",
+    "directionLocalToRemote": "Local → Remote",
+    "directionRemoteToLocal": "Remote → Local",
+    "compareBy": "Compare by",
+    "criteriaSize": "Size only",
+    "criteriaDate": "Date only",
+    "criteriaSizeDate": "Size + Date",
+    "recursive": "Recursive (include subdirectories)",
+    "deleteOrphaned": "Delete orphaned remote files",
+    "exclude": "Exclude",
+    "selectAll": "Select all",
+    "deselectAll": "Deselect all",
+    "showIdentical": "Show identical",
+    "columnPath": "Path",
+    "columnAction": "Action",
+    "columnLocal": "Local",
+    "columnRemote": "Remote",
+    "runComparisonHint": "Run comparison to see differences",
+    "allIdentical": "All files are identical",
+    "comparing": "Comparing directories…",
+    "syncItems": "Sync ({{count}} items)",
+    "toastFailed": "Failed: {{path}}",
+    "toastComplete": "Sync complete: {{count}} item(s) synchronized",
+    "toastFinishedWithErrors": "Sync finished with {{errorCount}} error(s) out of {{processedItems}} items",
+    "badgeUpload_one": "{{count}} upload",
+    "badgeUpload_other": "{{count}} uploads",
+    "badgeMkdir_one": "{{count}} mkdir",
+    "badgeMkdir_other": "{{count}} mkdirs",
+    "badgeDelete_one": "{{count}} delete",
+    "badgeDelete_other": "{{count}} deletes",
+    "badgeDownload_one": "{{count}} download",
+    "badgeDownload_other": "{{count}} downloads",
+    "badgeIdentical_one": "{{count}} identical",
+    "badgeIdentical_other": "{{count}} identical",
+    "badgeConflict_one": "{{count}} conflict",
+    "badgeConflict_other": "{{count}} conflicts",
+    "badgeTotal": "{{size}} total",
+    "compareButton": "Compare",
+    "syncingItem": "Syncing: {{item}}",
+    "recompareButton": "Re-compare"
   },
   "directoryTransfer": {
     "title": "Directory Transfer",
@@ -792,19 +875,19 @@
     "cannotMoveIntoOwn": "Cannot move folder into its own subfolder",
     "movedConnection": "Moved \"{{source}}\" to \"{{target}}\"",
     "failedToMoveConnection": "Failed to move connection",
-    "reorderedConnection": "Reordered \"{{name}}\"",
-    "sortByName": "Sort by name",
-    "sortedFolderByName": "Sorted \"{{name}}\" by name",
-    "failedToSortFolder": "Failed to sort folder",
     "movedFolder": "Moved folder \"{{source}}\" to \"{{target}}\"",
     "failedToMoveFolder": "Failed to Move Folder",
     "unableToMoveFolder": "Unable to move folder to new location.",
     "noConnectionsYet": "No connections yet",
     "connectionDetails": "Connection Details",
-    "dragToMove": "Drag to move or reorder",
     "noConnectionSelected": "No connection selected",
     "movedToRoot": "Moved \"{{name}}\" to All Connections",
-    "failedToReorder": "Failed to reorder items"
+    "failedToReorder": "Failed to reorder items",
+    "reorderedConnection": "Reordered \"{{name}}\"",
+    "sortByName": "Sort by name",
+    "sortedFolderByName": "Sorted \"{{name}}\" by name",
+    "failedToSortFolder": "Failed to sort folder",
+    "dragToMove": "Drag to move or reorder"
   },
   "filePanel": {
     "selectDirectory": "Select a directory to view its contents",
@@ -908,7 +991,6 @@
     }
   },
   "statusBar": {
-    "pending": "Pending",
     "connected": "Connected",
     "disconnected": "Disconnected",
     "connecting": "Connecting...",
@@ -917,7 +999,8 @@
     "uptime": "Uptime: {{time}}",
     "cpu": "CPU: {{percent}}%",
     "memory": "Memory: {{used}}/{{total}}",
-    "ready": "Ready"
+    "ready": "Ready",
+    "pending": "Pending"
   },
   "transferQueue": {
     "title": "Transfer Queue",
@@ -1012,11 +1095,11 @@
     "copiedToClipboard": "Copied to clipboard",
     "failedToCopyClipboard": "Failed to copy to clipboard",
     "reconnectingTerminal": "Reconnecting terminal…",
+    "outputSaved": "Terminal output saved",
+    "failedToSaveOutput": "Failed to save output",
     "connectionClosedManualReconnect": "Connection closed. Press R to reconnect, or use right-click → Reconnect.",
     "autoReconnectFailed": "Connection lost. Auto-reconnect failed after {{count}} attempts. Press R to reconnect, or use right-click → Reconnect.",
     "connectionFailedPermanently": "Connection failed permanently. Press R to reconnect, or use right-click → Reconnect.",
-    "outputSaved": "Terminal output saved",
-    "failedToSaveOutput": "Failed to save output",
     "previousSessionLost": "Previous session lost. New shell session started.",
     "ptyStarted": "PTY connection started",
     "interactiveCommandsHint": "You can now use interactive commands: vim, less, more, top, etc.",
@@ -1157,6 +1240,27 @@
     "desktopDisconnected": "Desktop Disconnected",
     "reconnect": "Reconnect",
     "connectingTo": "Connecting to {{name}}..."
+  },
+  "errorBoundary": {
+    "somethingWentWrong": "Something went wrong",
+    "unexpectedError": "An unexpected error occurred",
+    "retry": "Retry",
+    "labelError": "{{label}} encountered an error"
+  },
+  "connectionTabs": {
+    "reconnect": "Reconnect",
+    "duplicateTab": "Duplicate Tab",
+    "closeTab": "Close Tab",
+    "closeOtherTabs": "Close Other Tabs",
+    "closeTabsToLeft": "Close Tabs to the Left",
+    "closeTabsToRight": "Close Tabs to the Right",
+    "closeAllTabs": "Close All Tabs"
+  },
+  "networkMonitor": {
+    "title": "Network Statistics",
+    "noConnection": "No active connection. Connect to view network statistics.",
+    "comingSoon": "Advanced network monitoring features coming soon",
+    "disabledNotice": "Network Interfaces and Active Connections monitoring is currently disabled. Check the Network Usage and Network Latency charts in the Monitor tab for current network metrics."
   },
   "hostKey": {
     "title": "Verify Host Key",

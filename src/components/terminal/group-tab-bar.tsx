@@ -11,11 +11,13 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuShortcut,
   ContextMenuTrigger,
   ContextMenuSub,
   ContextMenuSubTrigger,
   ContextMenuSubContent,
 } from '../ui/context-menu';
+import { DEFAULT_APP_KEYBOARD_SHORTCUTS, formatKeyboardShortcut } from '@/lib/keyboard-shortcuts';
 
 // ── Module-level drag state (shared across all GroupTabBar instances) ──
 
@@ -64,6 +66,7 @@ interface GroupTabBarProps {
   onNewTab?: () => void;
   onDuplicateTab?: (tabId: string) => void;
   onReconnect?: (tabId: string) => void;
+  closeTabShortcut?: string;
 }
 
 export function GroupTabBar({
@@ -73,8 +76,17 @@ export function GroupTabBar({
   onNewTab,
   onDuplicateTab,
   onReconnect,
+  closeTabShortcut,
 }: GroupTabBarProps) {
   const { t } = useTranslation();
+  const duplicateTabShortcut = formatKeyboardShortcut(
+    'Ctrl+D',
+    navigator.platform.toUpperCase().includes('MAC'),
+  );
+  const formattedCloseTabShortcut = formatKeyboardShortcut(
+    closeTabShortcut ?? DEFAULT_APP_KEYBOARD_SHORTCUTS.closeSession,
+    navigator.platform.toUpperCase().includes('MAC'),
+  );
   const { dispatch } = useTerminalGroups();
   const { onCloseTab, onCloseTabs } = useTerminalCallbacks();
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -353,6 +365,7 @@ export function GroupTabBar({
                       <ContextMenuItem onClick={() => onDuplicateTab(tab.id)}>
                         <Copy className="mr-2 h-4 w-4" />
                         {t('contextMenu.duplicateTab')}
+                        <ContextMenuShortcut>{duplicateTabShortcut}</ContextMenuShortcut>
                       </ContextMenuItem>
                       <ContextMenuSeparator />
                     </>
@@ -361,6 +374,7 @@ export function GroupTabBar({
                   <ContextMenuItem onClick={() => handleTabClose(tab.id)}>
                     <X className="mr-2 h-4 w-4" />
                     {t('contextMenu.closeTab')}
+                    <ContextMenuShortcut>{formattedCloseTabShortcut}</ContextMenuShortcut>
                   </ContextMenuItem>
                   {/* Close Others */}
                   {tabs.length > 1 && (

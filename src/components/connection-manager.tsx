@@ -42,6 +42,7 @@ import {
   ContextMenuTrigger,
 } from './ui/context-menu';
 import { toast } from 'sonner';
+import { DEFAULT_APP_KEYBOARD_SHORTCUTS, formatKeyboardShortcut } from '../lib/keyboard-shortcuts';
 
 interface ConnectionNode {
   id: string;
@@ -64,7 +65,8 @@ interface ConnectionManagerProps {
   onConnectionConnect?: (connection: ConnectionNode) => void;
   selectedConnectionId: string | null;
   activeConnections?: Set<string>;
-  onNewConnection?: () => void;
+  refreshTrigger?: number;
+  onNewConnection?: (folderPath?: string) => void;
   onEditConnection?: (connection: ConnectionNode) => void;
   onDeleteConnection?: (connectionId: string) => void;
   onDuplicateConnection?: (connection: ConnectionNode) => void;
@@ -80,6 +82,7 @@ export function ConnectionManager({
   onConnectionConnect,
   selectedConnectionId,
   activeConnections = new Set(),
+  refreshTrigger = 0,
   onNewConnection,
   onEditConnection,
   onDeleteConnection,
@@ -88,6 +91,10 @@ export function ConnectionManager({
   onQuickConnect,
 }: ConnectionManagerProps) {
   const { t } = useTranslation();
+  const newConnectionShortcut = formatKeyboardShortcut(
+    DEFAULT_APP_KEYBOARD_SHORTCUTS.newSession,
+    navigator.platform.toUpperCase().includes('MAC'),
+  );
   // Load connections from storage
   const loadConnections = (): ConnectionNode[] => {
     const tree = ConnectionStorageManager.buildConnectionTree(activeConnections);
@@ -113,10 +120,29 @@ export function ConnectionManager({
   const suppressClickRef = useRef(false);
   const treeContainerRef = useRef<HTMLDivElement>(null);
 
-  // Reload connections when active connections change
+  // Reload connections when active connections or refreshTrigger changes,
+  // preserving expand state across tree rebuilds.
   useEffect(() => {
-    setConnections(loadConnections());
-  }, [activeConnections]);
+    const newTree = loadConnections();
+    setConnections(prev => {
+      // Merge isExpanded from the previous tree to preserve the user's
+      // expand/collapse state across tree rebuilds (the storage backend
+      // always returns isExpanded: true).
+      const mergeExpanded = (newNodes: ConnectionNode[]): ConnectionNode[] =>
+        newNodes.map(newNode => {
+          const prevNode = prev.find(n => n.id === newNode.id);
+          const merged: ConnectionNode = {
+            ...newNode,
+            isExpanded: prevNode !== undefined ? prevNode.isExpanded : newNode.isExpanded,
+          };
+          if (newNode.children && prevNode?.children) {
+            merged.children = mergeExpanded(newNode.children);
+          }
+          return merged;
+        });
+      return mergeExpanded(newTree);
+    });
+  }, [activeConnections, refreshTrigger]);
 
   // Handle connection deletion
   const handleDelete = (connectionId: string) => {
@@ -149,6 +175,12 @@ export function ConnectionManager({
           password: connectionData.password,
           privateKeyPath: connectionData.privateKeyPath,
           passphrase: connectionData.passphrase,
+          // Copy proxy settings
+          proxyType: connectionData.proxyType,
+          proxyHost: connectionData.proxyHost,
+          proxyPort: connectionData.proxyPort,
+          proxyUsername: connectionData.proxyUsername,
+          proxyPassword: connectionData.proxyPassword,
         });
         setConnections(loadConnections());
         toast.success(t('connectionManager.duplicated', { name: duplicated.name }));
@@ -615,13 +647,8 @@ export function ConnectionManager({
       // Suppress the synthetic click that follows a completed drag
       if (suppressClickRef.current) return;
 
-      // Always select the node first
+      // Select the node — folder toggle is handled separately by the chevron button
       onConnectionSelect(node);
-
-      // Then toggle folder expansion if it's a folder
-      if (node.type === 'folder') {
-        toggleExpanded(node.id);
-      }
     };
 
     const handleNodeDoubleClick = () => {
@@ -655,7 +682,15 @@ export function ConnectionManager({
           <div className="absolute bottom-0 right-0 h-0.5 bg-primary rounded" style={{ left: `${level * 16 + 8}px` }} />
         )}
         {node.type === 'folder' && (
-          <Button variant="ghost" size="sm" className="p-0 h-4 w-4">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="p-0 h-4 w-4"
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleExpanded(node.id);
+            }}
+          >
             {node.isExpanded ?
               <ChevronDown className="w-3 h-3" /> :
               <ChevronRight className="w-3 h-3" />
@@ -733,6 +768,13 @@ export function ConnectionManager({
               {nodeContent}
             </ContextMenuTrigger>
             <ContextMenuContent>
+              <ContextMenuItem
+                onClick={() => onNewConnection?.(node.path)}
+              >
+                <Plus className="w-4 h-4 mr-2" />
+                {t('connectionManager.newConnection')}
+              </ContextMenuItem>
+              <ContextMenuSeparator />
               <ContextMenuItem
                 onClick={() => openNewFolderDialog(node.path)}
               >
@@ -847,13 +889,18 @@ export function ConnectionManager({
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={onNewConnection}
+                  onClick={() => onNewConnection?.()}
                   className="h-6 w-6 p-0"
                 >
                   <Plus className="w-3.5 h-3.5" />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>{t('connectionManager.newConnection')}</TooltipContent>
+              <TooltipContent className="flex items-center gap-2">
+                <span>{t('connectionManager.newConnection')}</span>
+                <kbd className="rounded border border-border bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground">
+                  {newConnectionShortcut}
+                </kbd>
+              </TooltipContent>
             </Tooltip>
           </TooltipProvider>
         </div>
@@ -866,7 +913,7 @@ export function ConnectionManager({
             <div className="flex flex-col items-center justify-center h-full p-4 text-center">
               <p className="text-sm text-muted-foreground mb-4">{t('connectionManager.noConnectionsYet')}</p>
               {onNewConnection && (
-                <Button onClick={onNewConnection} size="sm" variant="outline">
+                <Button onClick={() => onNewConnection?.()} size="sm" variant="outline">
                   <Plus className="w-4 h-4 mr-2" />
                   {t('connectionManager.newConnection')}
                 </Button>

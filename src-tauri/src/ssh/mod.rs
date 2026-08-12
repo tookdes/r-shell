@@ -22,6 +22,57 @@ pub static PREFERRED_HOST_KEY_ALGOS: &[russh_keys::key::Name] = &[
     russh_keys::key::RSA_SHA2_512,
 ];
 
+const BASH_VERSION_PROBE: &str = r#"printf '__RSHELL_BASH_VERSION__%s' "${BASH_VERSION-}""#;
+const BASH_VERSION_MARKER: &str = "__RSHELL_BASH_VERSION__";
+const BASH_SHELL_INTEGRATION_PREFIX: &str = r#" stty echo; __rshell_report_cwd(){ local p=${PWD//%/%25}; p=${p// /%20}; p=${p//#/%23}; p=${p//\?/%3F}; printf '\033]7;file://%s%s\033\\' "${HOSTNAME:-localhost}" "$p"; }; "#;
+const BASH_SHELL_INTEGRATION_SUFFIX: &str = "printf '\\r\\033[2K'\n";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct BashVersion {
+    pub(crate) major: u32,
+    pub(crate) minor: u32,
+}
+
+pub(crate) fn bash_version_from_probe(output: &str) -> Option<BashVersion> {
+    let version = output.rsplit_once(BASH_VERSION_MARKER)?.1.trim();
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some(BashVersion { major, minor })
+}
+
+pub(crate) fn bash_shell_integration_command(version: BashVersion) -> Vec<u8> {
+    let prompt_command = if version >= (BashVersion { major: 5, minor: 1 }) {
+        r#"if declare -p PROMPT_COMMAND &>/dev/null; then PROMPT_COMMAND=("${PROMPT_COMMAND[@]}" __rshell_report_cwd); else PROMPT_COMMAND=(__rshell_report_cwd); fi; "#
+    } else {
+        r#"if [[ -n ${PROMPT_COMMAND-} ]]; then PROMPT_COMMAND+=$'\n__rshell_report_cwd'; else PROMPT_COMMAND=__rshell_report_cwd; fi; "#
+    };
+
+    format!(
+        "{}{}{}",
+        BASH_SHELL_INTEGRATION_PREFIX, prompt_command, BASH_SHELL_INTEGRATION_SUFFIX
+    )
+    .into_bytes()
+}
+
+/// Compression algorithms to advertise, ordered so zlib is preferred over none.
+///
+/// Order matters: russh negotiates the first algorithm that the server also
+/// lists, so zlib must come before none for compression to actually take
+/// effect. `zlib@openssh.com` covers servers using OpenSSH's "delayed"
+/// compression. Requires russh's `flate2` feature, which is enabled by default.
+pub fn compression_preferences(enabled: bool) -> &'static [russh::compression::Name] {
+    if enabled {
+        &[
+            russh::compression::ZLIB,
+            russh::compression::ZLIB_LEGACY,
+            russh::compression::NONE,
+        ]
+    } else {
+        &[russh::compression::NONE]
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshConfig {
     pub host: String,
@@ -43,9 +94,19 @@ pub struct SshConfig {
     /// Commands to send once the interactive shell is ready (joined with \n).
     #[serde(default)]
     pub startup_command: Option<String>,
+    /// Enable zlib compression negotiation (default: true, matching the UI).
+    #[serde(default = "default_compression")]
+    pub compression: bool,
+    /// Max missed keepalive replies before the connection is closed.
+    #[serde(default)]
+    pub keepalive_max: Option<u32>,
 }
 
 fn default_verify_host_key() -> bool {
+    true
+}
+
+fn default_compression() -> bool {
     true
 }
 
@@ -196,12 +257,16 @@ impl SshClient {
         let ssh_config = client::Config {
             preferred: russh::Preferred {
                 key: std::borrow::Cow::Borrowed(PREFERRED_HOST_KEY_ALGOS),
+                compression: std::borrow::Cow::Borrowed(compression_preferences(
+                    config.compression,
+                )),
                 ..russh::Preferred::DEFAULT
             },
-            // Keepalive interval comes from app settings (default 60 s).
-            // After 3 missed replies russh closes a dead connection.
+            // Send a keepalive on the user-configured interval. After the
+            // configured number of missed replies russh closes the connection,
+            // preventing the server from silently dropping idle sessions.
             keepalive_interval,
-            keepalive_max: 3,
+            keepalive_max: config.keepalive_max.unwrap_or(3) as usize,
             ..client::Config::default()
         };
 
@@ -354,8 +419,23 @@ impl SshClient {
     /// This enables interactive commands like vim, less, more, top, etc.
     pub async fn create_pty_session(&self, cols: u32, rows: u32) -> Result<PtySession> {
         if let Some(session) = &self.session {
+            let bash_version = tokio::time::timeout(
+                Duration::from_secs(2),
+                self.execute_command(BASH_VERSION_PROBE),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .and_then(|output| bash_version_from_probe(&output));
+
             // Open a new SSH channel
             let mut channel = session.channel_open_session().await?;
+            let bash_terminal_modes = [(Pty::ECHO, 0), (Pty::ECHONL, 0)];
+            let terminal_modes = if bash_version.is_some() {
+                bash_terminal_modes.as_slice()
+            } else {
+                &[]
+            };
 
             // Request PTY with terminal type and dimensions
             // Similar to ttyd's approach: xterm-256color terminal
@@ -367,7 +447,7 @@ impl SshClient {
                     rows,             // rows
                     0,                // pixel_width (not used)
                     0,                // pixel_height (not used)
-                    &[],              // terminal modes
+                    terminal_modes,
                 )
                 .await?;
 
@@ -380,7 +460,12 @@ impl SshClient {
             let (output_tx, output_rx) = mpsc::channel::<Vec<u8>>(128); // Bounded: back-pressure to SSH window
 
             // Clone channel for input task
-            let input_channel = channel.make_writer();
+            let mut input_channel = channel.make_writer();
+            if let Some(version) = bash_version {
+                let integration_command = bash_shell_integration_command(version);
+                input_channel.write_all(&integration_command).await?;
+                input_channel.flush().await?;
+            }
 
             // Create a channel for resize requests
             let (resize_tx, mut resize_rx) = mpsc::channel::<(u32, u32)>(16);
@@ -506,6 +591,16 @@ impl SshClient {
         } else {
             Err(anyhow::anyhow!("Not connected"))
         }
+    }
+
+    pub(crate) async fn open_sftp_session(&self) -> Result<SftpSession> {
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Not connected"))?;
+        let channel = session.channel_open_session().await?;
+        channel.request_subsystem(true, "sftp").await?;
+        Ok(SftpSession::new(channel.into_stream()).await?)
     }
 
     /// Download a remote file to a local path, streaming chunk-by-chunk so

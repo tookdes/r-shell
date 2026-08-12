@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from './ui/dialog';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
+import { PasswordInput } from './ui/password-input';
 import { Label } from './ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
@@ -31,7 +32,9 @@ interface ConnectionDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onConnect: (config: ConnectionConfig) => void;
+  onSave?: (config: ConnectionConfig) => void | Promise<void>;
   editingConnection?: ConnectionConfig | null;
+  initialFolder?: string;
 }
 
 export interface ConnectionConfig {
@@ -72,11 +75,30 @@ export interface ConnectionConfig {
   vncColorDepth?: '24' | '16' | '8';
 }
 
+/**
+ * Merge form overrides on top of defaults, falling back to the default when a
+ * field is `undefined`. Historical connections saved before advanced/proxy
+ * fields were persisted have no such values — without this fallback their edit
+ * dialog would show blank controls instead of the defaults used for new ones.
+ */
+function mergeWithDefaults(defaults: ConnectionConfig, overrides: ConnectionConfig): ConnectionConfig {
+  const merged: ConnectionConfig = { ...defaults, ...overrides };
+  const mergedRecord = merged as unknown as Record<string, unknown>;
+  for (const key of Object.keys(defaults) as Array<keyof ConnectionConfig>) {
+    if (mergedRecord[key] === undefined) {
+      mergedRecord[key] = defaults[key];
+    }
+  }
+  return merged;
+}
+
 export function ConnectionDialog({
   open,
   onOpenChange,
   onConnect,
-  editingConnection
+  onSave,
+  editingConnection,
+  initialFolder
 }: ConnectionDialogProps) {
   const defaultConfig: ConnectionConfig = {
     name: '',
@@ -103,6 +125,39 @@ export function ConnectionDialog({
 
   const [config, setConfig] = useState<ConnectionConfig>(defaultConfig);
 
+  // Track number input display values separately from config to allow
+  // the field to be empty while editing — React controlled inputs need
+  // value="" to render empty, but ConnectionConfig uses strict number types.
+  const initialDisplayValues = {
+    port: 22 as number | '',
+    proxyPort: 8080 as number | '',
+    keepAliveInterval: 60 as number | '',
+    serverAliveCountMax: 3 as number | '',
+  };
+  const [displayValues, setDisplayValues] = useState(initialDisplayValues);
+
+  /** Handle onChange for a controlled number input that must allow empty. */
+  const handleNumberInput = (
+    field: keyof typeof initialDisplayValues,
+    rawValue: string,
+    onValid: (n: number) => void,
+  ) => {
+    if (rawValue === '') {
+      setDisplayValues(prev => ({ ...prev, [field]: '' }));
+      return;
+    }
+    const parsed = parseInt(rawValue, 10);
+    if (!Number.isNaN(parsed)) {
+      setDisplayValues(prev => ({ ...prev, [field]: parsed }));
+      onValid(parsed);
+    }
+  };
+
+  /** Sync display values when the form re-opens with new data. */
+  const syncDisplayValues = (config_: typeof initialDisplayValues) => {
+    setDisplayValues(config_);
+  };
+
   const [isConnecting, setIsConnecting] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [_savedProfiles, setSavedProfiles] = useState<ConnectionProfile[]>([]);
@@ -127,11 +182,22 @@ export function ConnectionDialog({
       const folderPaths = folders.map(f => f.path).sort();
       setAvailableFolders(folderPaths);
 
-      // Load editing connection data into config when dialog opens
+      // Pre-select folder when initialFolder is provided (new connection from folder context menu)
+      if (initialFolder && !editingConnection) {
+        setConnectionFolder(initialFolder);
+      }
+
+      // Load editing connection data into config when dialog opens.
+      // mergeWithDefaults falls back to defaultConfig for fields a historical
+      // connection never stored (advanced/proxy options), matching the
+      // pre-filled values a new connection gets.
       if (editingConnection) {
-        setConfig({
-          ...defaultConfig,
-          ...editingConnection
+        setConfig(mergeWithDefaults(defaultConfig, editingConnection));
+        syncDisplayValues({
+          port: editingConnection.port ?? 22,
+          proxyPort: editingConnection.proxyPort ?? 8080,
+          keepAliveInterval: editingConnection.keepAliveInterval ?? 60,
+          serverAliveCountMax: editingConnection.serverAliveCountMax ?? 3,
         });
         // When editing, don't show "save as connection" since it already exists
         setSaveAsConnection(false);
@@ -139,12 +205,13 @@ export function ConnectionDialog({
         // Reset to defaults for new connection
         setConfig(defaultConfig);
         setSaveAsConnection(true);
+        syncDisplayValues(initialDisplayValues);
       }
     } else {
       // Reset connection state when dialog closes
       resetConnectionState();
     }
-  }, [open, editingConnection]);
+  }, [open, editingConnection, initialFolder]);
 
   const _handleSaveProfile = () => {
     try {
@@ -284,6 +351,10 @@ export function ConnectionDialog({
             proxyPassword: secretsForStorage.proxyPassword,
             startupCommand: config.startupCommand,
             ftpsEnabled: config.ftpsEnabled,
+            compression: config.compression,
+            keepAlive: config.keepAlive,
+            keepAliveInterval: config.keepAliveInterval,
+            serverAliveCountMax: config.serverAliveCountMax,
             domain: config.domain,
             rdpResolution: config.rdpResolution,
             vncColorDepth: config.vncColorDepth,
@@ -309,6 +380,10 @@ export function ConnectionDialog({
             proxyPassword: secretsForStorage.proxyPassword,
             startupCommand: config.startupCommand,
             ftpsEnabled: config.ftpsEnabled,
+            compression: config.compression,
+            keepAlive: config.keepAlive,
+            keepAliveInterval: config.keepAliveInterval,
+            serverAliveCountMax: config.serverAliveCountMax,
             domain: config.domain,
             rdpResolution: config.rdpResolution,
             vncColorDepth: config.vncColorDepth,
@@ -329,6 +404,54 @@ export function ConnectionDialog({
     }
 
     // SSH / Telnet / Raw / Serial — connect via ssh_connect
+    // Save connection config FIRST (consistent with SFTP/FTP/Desktop),
+    // so the config is preserved even if the remote server is temporarily unreachable.
+    if (editingConnection?.id) {
+      ConnectionStorageManager.updateConnection(editingConnection.id, {
+        name: config.name,
+        host: config.host,
+        port: config.port || 22,
+        username: config.username,
+        protocol: config.protocol,
+        authMethod: config.authMethod,
+        password: config.password,
+        privateKeyPath: config.privateKeyPath,
+        passphrase: config.passphrase,
+        proxyType: config.proxyType,
+        proxyHost: config.proxyHost,
+        proxyPort: config.proxyPort,
+        proxyUsername: config.proxyUsername,
+        proxyPassword: config.proxyPassword,
+        compression: config.compression,
+        keepAlive: config.keepAlive,
+        keepAliveInterval: config.keepAliveInterval,
+        serverAliveCountMax: config.serverAliveCountMax,
+        lastConnected: new Date().toISOString(),
+      });
+    } else if (saveAsConnection) {
+      ConnectionStorageManager.saveConnectionWithId(connectionId, {
+        name: config.name,
+        host: config.host,
+        port: config.port || 22,
+        username: config.username,
+        protocol: config.protocol,
+        folder: connectionFolder,
+        authMethod: config.authMethod,
+        password: config.password,
+        privateKeyPath: config.privateKeyPath,
+        passphrase: config.passphrase,
+        proxyType: config.proxyType,
+        proxyHost: config.proxyHost,
+        proxyPort: config.proxyPort,
+        proxyUsername: config.proxyUsername,
+        proxyPassword: config.proxyPassword,
+        compression: config.compression,
+        keepAlive: config.keepAlive,
+        keepAliveInterval: config.keepAliveInterval,
+        serverAliveCountMax: config.serverAliveCountMax,
+      });
+    }
+
     try {
       const result = await invoke<{ success: boolean; error?: string }>(
         'ssh_connect',
@@ -411,14 +534,11 @@ export function ConnectionDialog({
           ...config,
           id: connectionId
         });
-        onOpenChange(false);
-
-        // Reset form if creating new connection
         if (!editingConnection) {
           setConfig(defaultConfig);
         }
       } else {
-        // Show error toast
+        // Connection failed — config was already saved above, user can retry from sidebar
         console.error('Connection failed:', result.error);
         if (cancelRequestedRef.current && result.error?.toLowerCase().includes('cancelled')) {
           toast.info(t('connectionDialog.toast.connectionCancelled'));
@@ -440,11 +560,17 @@ export function ConnectionDialog({
         });
       }
     } finally {
+      // Close dialog — config was already saved above
+      onOpenChange(false);
+      if (!editingConnection) {
+        setConfig(defaultConfig);
+      }
       resetConnectionState();
     }
-  };
 
-  const handleCancelConnectionAttempt = async () => {
+  }
+
+const handleCancelConnectionAttempt = async () => {
     if (!isConnecting) {
       onOpenChange(false);
       return;
@@ -479,6 +605,46 @@ export function ConnectionDialog({
       // Always reset the state when user requests cancel
       resetConnectionState();
     }
+  };
+
+  const handleSave = async () => {
+    if (!editingConnection?.id) return;
+
+    // Save updated connection to storage
+    ConnectionStorageManager.updateConnection(editingConnection.id, {
+      name: config.name,
+      host: config.host,
+      port: config.port || 22,
+      username: config.username,
+      protocol: config.protocol,
+      authMethod: config.authMethod,
+      password: config.password,
+      privateKeyPath: config.privateKeyPath,
+      passphrase: config.passphrase,
+      ftpsEnabled: config.ftpsEnabled,
+      proxyType: config.proxyType,
+      proxyHost: config.proxyHost,
+      proxyPort: config.proxyPort,
+      proxyUsername: config.proxyUsername,
+      proxyPassword: config.proxyPassword,
+      compression: config.compression,
+      keepAlive: config.keepAlive,
+      keepAliveInterval: config.keepAliveInterval,
+      serverAliveCountMax: config.serverAliveCountMax,
+      domain: config.domain,
+      rdpResolution: config.rdpResolution,
+      vncColorDepth: config.vncColorDepth,
+    });
+
+    // Notify parent to update tab display info (e.g. tab title)
+    // May also trigger a connection attempt if there's no open tab
+    await onSave?.({
+      ...config,
+      id: editingConnection.id,
+    });
+
+    onOpenChange(false);
+    resetConnectionState();
   };
 
   const updateConfig = (updates: Partial<ConnectionConfig>) => {
@@ -576,12 +742,14 @@ export function ConnectionDialog({
                       onValueChange={(value: ConnectionConfig['protocol']) => {
                         const validAuthMethods = getAuthMethods(value);
                         const currentAuthValid = validAuthMethods.includes(config.authMethod);
+                        const defaultPort = getDefaultPort(value);
                         updateConfig({
                           protocol: value,
-                          port: getDefaultPort(value),
+                          port: defaultPort,
                           ...(!currentAuthValid && { authMethod: validAuthMethods[0] }),
                           ...(value !== 'FTP' && { ftpsEnabled: undefined }),
                         });
+                        setDisplayValues(prev => ({ ...prev, port: defaultPort }));
                       }}
                     >
                       <SelectTrigger>
@@ -614,8 +782,8 @@ export function ConnectionDialog({
                     <Input
                       id="port"
                       type="number"
-                      value={config.port}
-                      onChange={(e) => updateConfig({ port: parseInt(e.target.value) || 22 })}
+                      value={displayValues.port}
+                      onChange={(e) => handleNumberInput('port', e.target.value, (n) => updateConfig({ port: n }))}
                     />
                   </div>
                 </div>
@@ -740,9 +908,8 @@ export function ConnectionDialog({
                 {config.authMethod === 'password' && (
                   <div className="space-y-2">
                     <Label htmlFor="password">{t('connectionDialog.label.password')}</Label>
-                    <Input
+                    <PasswordInput
                       id="password"
-                      type="password"
                       placeholder={t('connectionDialog.placeholder.password')}
                       value={config.password}
                       onChange={(e) => updateConfig({ password: e.target.value })}
@@ -775,9 +942,8 @@ export function ConnectionDialog({
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="passphrase">{t('connectionDialog.label.passphrase')}</Label>
-                      <Input
+                      <PasswordInput
                         id="passphrase"
-                        type="password"
                         placeholder={t('connectionDialog.placeholder.passphrase')}
                         value={config.passphrase}
                         onChange={(e) => updateConfig({ passphrase: e.target.value })}
@@ -891,8 +1057,8 @@ export function ConnectionDialog({
                         <Input
                           id="proxy-port"
                           type="number"
-                          value={config.proxyPort}
-                          onChange={(e) => updateConfig({ proxyPort: parseInt(e.target.value) || 8080 })}
+                          value={displayValues.proxyPort}
+                          onChange={(e) => handleNumberInput('proxyPort', e.target.value, (n) => updateConfig({ proxyPort: n }))}
                         />
                       </div>
                     </div>
@@ -903,14 +1069,14 @@ export function ConnectionDialog({
                         <Input
                           id="proxy-username"
                           placeholder={t('connectionDialog.placeholder.proxyUsername')}
+                          value={config.proxyUsername}
                           onChange={(e) => updateConfig({ proxyUsername: e.target.value })}
                         />
                       </div>
                       <div className="space-y-2">
                         <Label htmlFor="proxy-password">{t('connectionDialog.label.proxyPassword')}</Label>
-                        <Input
+                        <PasswordInput
                           id="proxy-password"
-                          type="password"
                           placeholder={t('connectionDialog.placeholder.proxyPassword')}
                           value={config.proxyPassword}
                           onChange={(e) => updateConfig({ proxyPassword: e.target.value })}
@@ -998,8 +1164,8 @@ export function ConnectionDialog({
                                 <Input
                                   id="keep-alive-interval"
                                   type="number"
-                                  value={config.keepAliveInterval}
-                                  onChange={(e) => updateConfig({ keepAliveInterval: parseInt(e.target.value) || 60 })}
+                                  value={displayValues.keepAliveInterval}
+                                  onChange={(e) => handleNumberInput('keepAliveInterval', e.target.value, (n) => updateConfig({ keepAliveInterval: n }))}
                                 />
                               </div>
                               <div className="space-y-2">
@@ -1007,8 +1173,8 @@ export function ConnectionDialog({
                                 <Input
                                   id="max-count"
                                   type="number"
-                                  value={config.serverAliveCountMax}
-                                  onChange={(e) => updateConfig({ serverAliveCountMax: parseInt(e.target.value) || 3 })}
+                                  value={displayValues.serverAliveCountMax}
+                                  onChange={(e) => handleNumberInput('serverAliveCountMax', e.target.value, (n) => updateConfig({ serverAliveCountMax: n }))}
                                 />
                               </div>
                             </div>
@@ -1070,9 +1236,15 @@ export function ConnectionDialog({
               >
                 {isConnecting ? (isCancelling ? t('connectionDialog.button.cancelling') : t('connectionDialog.button.stop')) : t('connectionDialog.button.cancel')}
               </Button>
-              <Button onClick={handleConnect} disabled={isConnecting || isCancelling} className="min-w-[140px]">
-                {isConnecting ? t('connectionDialog.button.connecting') : editingConnection ? t('connectionDialog.button.updateAndConnect') : t('connectionDialog.button.connect')}
-              </Button>
+              {editingConnection ? (
+                <Button onClick={handleSave} className="min-w-[140px]">
+                  {t('connectionDialog.button.save')}
+                </Button>
+              ) : (
+                <Button onClick={handleConnect} disabled={isConnecting || isCancelling} className="min-w-[140px]">
+                  {isConnecting ? t('connectionDialog.button.connecting') : t('connectionDialog.button.connect')}
+                </Button>
+              )}
             </div>
           </div>
         </DialogFooter>

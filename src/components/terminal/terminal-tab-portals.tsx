@@ -8,6 +8,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import { useTranslation } from 'react-i18next';
 import { createPortal } from 'react-dom';
 import { useTerminalGroups } from '../../lib/terminal-group-context';
 import { useTerminalCallbacks } from '../../lib/terminal-callbacks-context';
@@ -49,6 +50,7 @@ function useThemeKey(): number {
 }
 
 function TerminalTabContent({ tab, themeKey, appearanceKey }: { tab: TerminalTab; themeKey: number; appearanceKey: number }) {
+  const { t } = useTranslation();
   const { state, dispatch } = useTerminalGroups();
   const { onReconnectTab } = useTerminalCallbacks();
   const groupId = state.tabToGroupMap[tab.id];
@@ -149,7 +151,7 @@ function TerminalTabContent({ tab, themeKey, appearanceKey }: { tab: TerminalTab
     content = (
       <div className="h-full w-full flex items-center justify-center bg-muted/30">
         <div className="text-center text-muted-foreground">
-          <div className="animate-pulse">Waiting for connection...</div>
+          <div className="animate-pulse">{t('app.waitingForConnection')}</div>
         </div>
       </div>
     );

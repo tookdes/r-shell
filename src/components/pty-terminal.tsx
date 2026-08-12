@@ -10,13 +10,15 @@ import { invoke } from '@tauri-apps/api/core';
 import { readText as readClipboardText, writeText as writeClipboardText } from '@tauri-apps/plugin-clipboard-manager';
 import { loadAppearanceSettings, getThemeAwareTerminalOptions, getThemeAwareTerminalTheme, terminalThemes, defaultTerminalTheme } from '../lib/terminal-config';
 import { TerminalContextMenu } from './terminal/terminal-context-menu';
-import { TerminalSearchBar } from './terminal/terminal-search-bar';
+import { TerminalSearchBar, type TerminalSearchState } from './terminal/terminal-search-bar';
 import { toast } from 'sonner';
 import { signalReady } from '../lib/restoration-manager';
 import { useTerminalCallbacks } from '../lib/terminal-callbacks-context';
 import { loadConnectionTransportSettings } from '../lib/connection-transport-settings';
 import { encodeModifiedEnterCsiU, normalizePtyInput } from '../lib/pty-input';
 import i18n from '../lib/i18n';
+import { registerTerminalWorkingDirectoryHandler } from '../lib/terminal-working-directory';
+import { TERMINAL_COMMAND_EVENT, type TerminalCommandDetail } from '../lib/terminal-commands';
 import '@xterm/xterm/css/xterm.css';
 
 interface PtyTerminalProps {
@@ -56,7 +58,7 @@ export function PtyTerminal({
   onOutput,
 }: PtyTerminalProps) {
   const { t } = useTranslation();
-  const { onReconnectTab } = useTerminalCallbacks();
+  const { onReconnectTab, onWorkingDirectoryChange } = useTerminalCallbacks();
   const onReconnectTabRef = React.useRef(onReconnectTab);
   React.useEffect(() => {
     onReconnectTabRef.current = onReconnectTab;
@@ -77,6 +79,7 @@ export function PtyTerminal({
   // Search bar state
   const [searchVisible, setSearchVisible] = React.useState(false);
   const [searchFocusTrigger, setSearchFocusTrigger] = React.useState(0);
+  const searchStateRef = React.useRef<TerminalSearchState>({ query: '', caseSensitive: false, regex: false });
   const [hasSelection, setHasSelection] = React.useState(false);
 
   // Scrollbar visibility — only show when buffer overflows the visible rows
@@ -187,6 +190,10 @@ export function PtyTerminal({
 
     // Create terminal with user's appearance settings
     const term = new XTerm(termOptions);
+    const workingDirectoryDisposable = registerTerminalWorkingDirectoryHandler(
+      term.parser,
+      (path) => onWorkingDirectoryChange?.(connectionId, path),
+    );
 
     const fitAddon = new FitAddon();
     const webLinks = new WebLinksAddon();
@@ -325,12 +332,16 @@ export function PtyTerminal({
       if (event.key === 'F3') {
         event.preventDefault();
         const search = searchRef.current;
-        if (search) {
+        const { query, caseSensitive, regex } = searchStateRef.current;
+        if (search && query) {
           if (event.shiftKey) {
-            search.findPrevious('', { caseSensitive: false, regex: false });
+            search.findPrevious(query, { caseSensitive, regex });
           } else {
-            search.findNext('', { caseSensitive: false, regex: false });
+            search.findNext(query, { caseSensitive, regex });
           }
+        } else {
+          setSearchVisible(true);
+          setSearchFocusTrigger(prev => prev + 1);
         }
         return false;
       }
@@ -901,6 +912,7 @@ export function PtyTerminal({
       inputDisposable.dispose();
       resizeDisposable.dispose();
       lineFeedDisposable.dispose();
+      workingDirectoryDisposable.dispose();
       window.removeEventListener('resize', handleWindowResize);
       resizeObserver.disconnect();
       if (selectionDoc) {
@@ -923,12 +935,14 @@ export function PtyTerminal({
       term.reset(); // clear scrollback + viewport so GC can reclaim xterm buffers sooner
       term.dispose();
     };
-  }, [connectionId, connectionName, host, username, terminalKey, reconnectKey, sendInputToPty]);
-  // NOTE: themeKey and appearanceKey are intentionally NOT in the deps above.
-  // Including them would tear down the WebSocket + PTY session on every theme
-  // change (e.g. macOS auto Dark/Light switch), killing any running remote
-  // processes such as nvitop. Theme/appearance updates are handled in-place
-  // by the effect below without any connection disruption.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionId, host, username, terminalKey, reconnectKey, sendInputToPty, onWorkingDirectoryChange]);
+  // NOTE: themeKey, appearanceKey, and connectionName are intentionally NOT
+  // in the deps above. Including them would tear down the WebSocket + PTY
+  // session on every theme change (e.g. macOS auto Dark/Light switch), killing
+  // any running remote processes. Including connectionName would do the same
+  // when the user renames the connection via edit dialog — the tab title
+  // already updates via UPDATE_TAB_NAME without reconnecting.
 
   // Update terminal colors and font in-place when theme or appearance changes.
   React.useEffect(() => {
@@ -1018,76 +1032,51 @@ export function PtyTerminal({
 
   const handleFindNext = React.useCallback(() => {
     const search = searchRef.current;
-    if (search) {
-      // Search addon will use the last search query
-      search.findNext('', { caseSensitive: false, regex: false });
+    const { query, caseSensitive, regex } = searchStateRef.current;
+    if (search && query) {
+      search.findNext(query, { caseSensitive, regex });
+    } else {
+      handleSearch();
     }
-  }, []);
+  }, [handleSearch]);
 
   const handleFindPrevious = React.useCallback(() => {
     const search = searchRef.current;
-    if (search) {
-      search.findPrevious('', { caseSensitive: false, regex: false });
+    const { query, caseSensitive, regex } = searchStateRef.current;
+    if (search && query) {
+      search.findPrevious(query, { caseSensitive, regex });
+    } else {
+      handleSearch();
     }
-  }, []);
+  }, [handleSearch]);
 
   const handleSelectAll = React.useCallback(() => {
     xtermRef.current?.selectAll();
   }, []);
 
-  // Menu bar Edit actions: only the active terminal responds.
+  const handleSearchStateChange = React.useCallback((state: TerminalSearchState) => {
+    searchStateRef.current = state;
+  }, []);
+
   React.useEffect(() => {
-    if (!isActive) return;
+    const handleTerminalCommand = (event: Event) => {
+      const { tabId, command } = (event as CustomEvent<TerminalCommandDetail>).detail;
+      if (tabId !== connectionId) return;
 
-    const onClear = () => {
-      xtermRef.current?.clear();
-      setHasScrollableContent(false);
-    };
-    const onPaste = () => {
-      void pasteClipboardIntoPty();
-    };
-    const onCopy = () => {
-      handleCopy();
-    };
-    const onSelectAll = () => {
-      handleSelectAll();
-    };
-    const onFind = () => {
-      handleSearch();
-    };
-    const onFindNext = () => {
-      handleFindNext();
-    };
-    const onFindPrevious = () => {
-      handleFindPrevious();
+      switch (command) {
+        case 'copy': handleCopy(); break;
+        case 'paste': void handlePaste(); break;
+        case 'select-all': handleSelectAll(); break;
+        case 'find': handleSearch(); break;
+        case 'find-next': handleFindNext(); break;
+        case 'find-previous': handleFindPrevious(); break;
+        case 'clear-screen': handleClear(); break;
+      }
     };
 
-    window.addEventListener('r-shell:clear-active-terminal', onClear);
-    window.addEventListener('r-shell:paste-active-terminal', onPaste);
-    window.addEventListener('r-shell:copy-active-terminal', onCopy);
-    window.addEventListener('r-shell:select-all-active-terminal', onSelectAll);
-    window.addEventListener('r-shell:find-active-terminal', onFind);
-    window.addEventListener('r-shell:find-next-active-terminal', onFindNext);
-    window.addEventListener('r-shell:find-previous-active-terminal', onFindPrevious);
-
-    return () => {
-      window.removeEventListener('r-shell:clear-active-terminal', onClear);
-      window.removeEventListener('r-shell:paste-active-terminal', onPaste);
-      window.removeEventListener('r-shell:copy-active-terminal', onCopy);
-      window.removeEventListener('r-shell:select-all-active-terminal', onSelectAll);
-      window.removeEventListener('r-shell:find-active-terminal', onFind);
-      window.removeEventListener('r-shell:find-next-active-terminal', onFindNext);
-      window.removeEventListener('r-shell:find-previous-active-terminal', onFindPrevious);
-    };
-  }, [
-    isActive,
-    pasteClipboardIntoPty,
-    handleCopy,
-    handleSelectAll,
-    handleSearch,
-    handleFindNext,
-    handleFindPrevious,
-  ]);
+    window.addEventListener(TERMINAL_COMMAND_EVENT, handleTerminalCommand);
+    return () => window.removeEventListener(TERMINAL_COMMAND_EVENT, handleTerminalCommand);
+  }, [connectionId, handleClear, handleCopy, handleFindNext, handleFindPrevious, handlePaste, handleSearch, handleSelectAll]);
 
   const handleReconnect = React.useCallback(() => {
     if (onReconnectTab) {
@@ -1196,6 +1185,7 @@ export function PtyTerminal({
           visible={searchVisible}
           focusTrigger={searchFocusTrigger}
           onClose={() => setSearchVisible(false)}
+          onSearchStateChange={handleSearchStateChange}
         />
       )}
       

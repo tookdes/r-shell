@@ -54,6 +54,8 @@ pub struct FileEntry {
     pub modified: Option<String>,
     pub permissions: Option<String>,
     pub file_type: FileEntryType,
+    pub owner: Option<String>,
+    pub group: Option<String>,
 }
 
 /// Backward-compatible alias for code that still references RemoteFileEntry.
@@ -64,6 +66,45 @@ pub enum FileEntryType {
     File,
     Directory,
     Symlink,
+}
+
+pub(crate) async fn list_sftp_dir(sftp: &SftpSession, path: &str) -> Result<Vec<RemoteFileEntry>> {
+    let entries = sftp
+        .read_dir(path)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to list directory '{}': {}", path, e))?;
+    let mut result = Vec::new();
+    for entry in entries {
+        let name = entry.file_name();
+        if name == "." || name == ".." {
+            continue;
+        }
+        let attrs = entry.metadata();
+        let file_type = if attrs.is_dir() {
+            FileEntryType::Directory
+        } else if attrs.is_symlink() {
+            FileEntryType::Symlink
+        } else {
+            FileEntryType::File
+        };
+        result.push(RemoteFileEntry {
+            name,
+            size: attrs.size.unwrap_or(0),
+            modified: attrs.mtime.map(|t| chrono_from_unix_timestamp(t as u64)),
+            permissions: attrs.permissions.map(format_permissions),
+            file_type,
+            owner: attrs.uid.map(|uid| uid.to_string()),
+            group: attrs.gid.map(|gid| gid.to_string()),
+        });
+    }
+    result.sort_by(|a, b| {
+        let a_is_dir = matches!(a.file_type, FileEntryType::Directory);
+        let b_is_dir = matches!(b.file_type, FileEntryType::Directory);
+        b_is_dir
+            .cmp(&a_is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(result)
 }
 
 /// Standalone SFTP client — opens an SSH connection and SFTP subsystem
@@ -208,6 +249,12 @@ impl StandaloneSftpClient {
 
     // ===== File Operations =====
 
+    pub(crate) fn sftp_session(&self) -> Result<&SftpSession> {
+        self.sftp
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("SFTP session not connected"))
+    }
+
     /// List directory contents at `path`.
     pub async fn list_dir(&self, path: &str) -> Result<Vec<RemoteFileEntry>> {
         let sftp = self
@@ -248,6 +295,8 @@ impl StandaloneSftpClient {
                 modified,
                 permissions,
                 file_type,
+                owner: attrs.uid.map(|uid| uid.to_string()),
+                group: attrs.gid.map(|gid| gid.to_string()),
             });
         }
 
@@ -566,6 +615,8 @@ mod tests {
             modified: Some("2024-01-01 00:00:00".to_string()),
             permissions: Some("rw-r--r--".to_string()),
             file_type: FileEntryType::File,
+            owner: None,
+            group: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"name\":\"test.txt\""));
@@ -581,6 +632,8 @@ mod tests {
             modified: None,
             permissions: Some("rwxr-xr-x".to_string()),
             file_type: FileEntryType::Directory,
+            owner: None,
+            group: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("Directory"));
@@ -595,6 +648,8 @@ mod tests {
             modified: None,
             permissions: None,
             file_type: FileEntryType::Symlink,
+            owner: None,
+            group: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("Symlink"));
