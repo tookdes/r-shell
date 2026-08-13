@@ -11,6 +11,30 @@ export function normalizePtyInput(data: string): string {
   return data.replace(/\r\n/g, '\r').replace(/\n/g, '\r');
 }
 
+/**
+ * Build the binary WebSocket frame used to write bytes to a PTY session.
+ *
+ * Keeping this separate from text normalization is important for binary
+ * terminal protocols such as ZMODEM: protocol octets must reach the remote
+ * PTY byte-for-byte, without UTF-8 encoding or newline conversion.
+ */
+export function buildPtyInputFrame(
+  connectionIdBytes: Uint8Array,
+  dataBytes: Uint8Array,
+): Uint8Array {
+  if (connectionIdBytes.length > 0xffff) {
+    throw new RangeError('Connection id is too long for a PTY input frame');
+  }
+
+  const frame = new Uint8Array(3 + connectionIdBytes.length + dataBytes.length);
+  frame[0] = 0x00;
+  frame[1] = (connectionIdBytes.length >> 8) & 0xff;
+  frame[2] = connectionIdBytes.length & 0xff;
+  frame.set(connectionIdBytes, 3);
+  frame.set(dataBytes, 3 + connectionIdBytes.length);
+  return frame;
+}
+
 /** Modifier bitmask used by CSI u (kitty keyboard protocol) key sequences. */
 export interface KeyModifiers {
   shiftKey: boolean;

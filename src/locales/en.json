@@ -1103,7 +1103,21 @@
     "previousSessionLost": "Previous session lost. New shell session started.",
     "ptyStarted": "PTY connection started",
     "interactiveCommandsHint": "You can now use interactive commands: vim, less, more, top, etc.",
-    "autoReconnecting": "Connection lost. Reconnecting in {{seconds}}s (attempt {{attempt}}/{{max}})..."
+    "autoReconnecting": "Connection lost. Reconnecting in {{seconds}}s (attempt {{attempt}}/{{max}})...",
+    "zmodem": {
+      "saveTitle": "Save received ZMODEM file",
+      "selectFilesTitle": "Select files to send with ZMODEM",
+      "failed": "ZMODEM transfer failed: {{error}}",
+      "downloadStarted": "sz detected. Preparing to receive files...",
+      "fileReceived": "Received {{name}}",
+      "downloadComplete_one": "ZMODEM download complete ({{count}} file)",
+      "downloadComplete_other": "ZMODEM download complete ({{count}} files)",
+      "uploadStarted": "rz detected. Select the files to send.",
+      "cancelled": "ZMODEM transfer cancelled",
+      "uploadComplete_one": "ZMODEM upload complete ({{count}} file)",
+      "uploadComplete_other": "ZMODEM upload complete ({{count}} files)",
+      "socketClosed": "The terminal WebSocket is closed"
+    }
   },
   "systemMonitor": {
     "systemOverview": "System Overview",

@@ -1103,7 +1103,21 @@
     "previousSessionLost": "先前会话已丢失，已启动新的 shell 会话。",
     "ptyStarted": "PTY 连接已启动",
     "interactiveCommandsHint": "现在可以使用交互式命令：vim、less、more、top 等。",
-    "autoReconnecting": "连接已断开。将在 {{seconds}} 秒后重连（第 {{attempt}}/{{max}} 次）..."
+    "autoReconnecting": "连接已断开。将在 {{seconds}} 秒后重连（第 {{attempt}}/{{max}} 次）...",
+    "zmodem": {
+      "saveTitle": "保存 ZMODEM 接收文件",
+      "selectFilesTitle": "选择要通过 ZMODEM 发送的文件",
+      "failed": "ZMODEM 传输失败：{{error}}",
+      "downloadStarted": "已检测到 sz，正在准备接收文件…",
+      "fileReceived": "已接收 {{name}}",
+      "downloadComplete_one": "ZMODEM 下载完成（{{count}} 个文件）",
+      "downloadComplete_other": "ZMODEM 下载完成（{{count}} 个文件）",
+      "uploadStarted": "已检测到 rz，请选择要发送的文件",
+      "cancelled": "ZMODEM 传输已取消",
+      "uploadComplete_one": "ZMODEM 上传完成（{{count}} 个文件）",
+      "uploadComplete_other": "ZMODEM 上传完成（{{count}} 个文件）",
+      "socketClosed": "终端 WebSocket 已关闭"
+    }
   },
   "systemMonitor": {
     "systemOverview": "系统概览",
