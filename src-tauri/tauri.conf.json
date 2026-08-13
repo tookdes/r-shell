@@ -16,7 +16,7 @@
         "width": 1920,
         "height": 1080,
         "fullscreen": false,
-        "maximized": true,
+        "maximized": false,
         "resizable": true,
         "decorations": true,
         "titleBarStyle": "Overlay"
