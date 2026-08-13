@@ -300,6 +300,20 @@ impl SshClient {
             // preventing the server from silently dropping idle sessions.
             keepalive_interval,
             keepalive_max: config.keepalive_max.unwrap_or(3) as usize,
+            // russh's default rekey_time_limit is 1 hour: after an hour the
+            // client *initiates* a key re-exchange. Some LAN appliances
+            // (NAS/routers, e.g. 192.168.1.61) drop the session when they
+            // receive that KEXINIT — the log shows "Re-exchanging keys" then
+            // "early eof" exactly 60 minutes after connect. Disable the
+            // client-initiated time-based rekey (the server can still request
+            // a rekey itself, and we will answer it normally).
+            limits: russh::Limits::new(
+                // Keep the 1 GiB write/read rekey limits (russh defaults).
+                1 << 30,
+                1 << 30,
+                // Effectively disable time-based rekey (~100 years).
+                Duration::from_secs(60 * 60 * 24 * 365 * 100),
+            ),
             ..client::Config::default()
         };
 
