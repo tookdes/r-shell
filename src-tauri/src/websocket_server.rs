@@ -126,6 +126,17 @@ const CONTROL_SEND_TIMEOUT_MS: u64 = 100;
 /// Command byte that identifies a binary PTY output frame sent to the frontend.
 const BINARY_OUTPUT_CMD: u8 = 0x01;
 
+/// How often the backend pings the WebSocket client. Browsers answer pings
+/// automatically at the protocol level, so this both keeps the loopback
+/// WebSocket active and lets the backend detect a dead client promptly
+/// (instead of holding a zombie session that only reconnects on the next
+/// keystroke).
+const WS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+
+/// If the client has not answered any ping within this window, treat the
+/// WebSocket as dead and tear it down so the frontend reconnects cleanly.
+const WS_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(60);
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -299,95 +310,137 @@ impl WebSocketServer {
             }
         });
 
+        // Heartbeat: send a ping every WS_HEARTBEAT_INTERVAL and watch for
+        // pongs. A browser answers pings transparently; if none arrives within
+        // WS_HEARTBEAT_TIMEOUT the client (or the loopback path) is dead.
+        let mut heartbeat = tokio::time::interval_at(
+            tokio::time::Instant::now() + WS_HEARTBEAT_INTERVAL,
+            WS_HEARTBEAT_INTERVAL,
+        );
+        let mut last_pong = tokio::time::Instant::now();
+
         // Handle incoming WebSocket messages
-        while let Some(msg) = ws_receiver.next().await {
-            match msg {
-                Ok(Message::Binary(data)) => {
-                    // Binary INPUT command from frontend (fast path, no JSON).
-                    // Format: [0x00][id_len: u16 BE][connection_id bytes][data bytes]
-                    // (symmetric with the binary output frame encoding)
-                    if data.is_empty() {
-                        continue;
-                    }
-                    match data[0] {
-                        0x00 => {
-                            if data.len() < 3 {
-                                tracing::warn!("Binary INPUT message too short");
+        loop {
+            tokio::select! {
+                msg = ws_receiver.next() => {
+                    let Some(msg) = msg else {
+                        tracing::warn!("[WS] stream ended (client closed TCP connection) for a connection with {} active PTY session(s)", active_pty_generations.len());
+                        break;
+                    };
+                    match msg {
+                        Ok(Message::Binary(data)) => {
+                            // Binary INPUT command from frontend (fast path, no JSON).
+                            // Format: [0x00][id_len: u16 BE][connection_id bytes][data bytes]
+                            // (symmetric with the binary output frame encoding)
+                            if data.is_empty() {
                                 continue;
                             }
-                            let id_len = ((data[1] as usize) << 8) | data[2] as usize;
-                            let payload_offset = 3 + id_len;
-                            if data.len() < payload_offset {
-                                tracing::warn!("Binary INPUT message truncated");
-                                continue;
+                            match data[0] {
+                                0x00 => {
+                                    if data.len() < 3 {
+                                        tracing::warn!("Binary INPUT message too short");
+                                        continue;
+                                    }
+                                    let id_len = ((data[1] as usize) << 8) | data[2] as usize;
+                                    let payload_offset = 3 + id_len;
+                                    if data.len() < payload_offset {
+                                        tracing::warn!("Binary INPUT message truncated");
+                                        continue;
+                                    }
+                                    let connection_id =
+                                        String::from_utf8_lossy(&data[3..payload_offset]).to_string();
+                                    let input_data = data[payload_offset..].to_vec();
+                                    if let Err(e) = self
+                                        .connection_manager
+                                        .write_to_pty(&connection_id, input_data)
+                                        .await
+                                    {
+                                        tracing::error!("Failed to write to PTY: {}", e);
+                                    }
+                                }
+                                _ => {
+                                    tracing::warn!("Unknown binary command: {}", data[0]);
+                                }
                             }
-                            let connection_id =
-                                String::from_utf8_lossy(&data[3..payload_offset]).to_string();
-                            let input_data = data[payload_offset..].to_vec();
-                            if let Err(e) = self
-                                .connection_manager
-                                .write_to_pty(&connection_id, input_data)
+                        }
+                        Ok(Message::Text(text)) => {
+                            tracing::debug!("Received text message: {}", text);
+                            let ws_msg: WsMessage = match serde_json::from_str(&text) {
+                                Ok(msg) => msg,
+                                Err(e) => {
+                                    let error = WsMessage::Error {
+                                        message: format!("Invalid message format: {}", e),
+                                    };
+                                    let _ = send_control(&tx, &error).await?;
+                                    continue;
+                                }
+                            };
+                            match self
+                                .handle_message(ws_msg, tx.clone(), output_controls.clone())
                                 .await
                             {
-                                tracing::error!("Failed to write to PTY: {}", e);
+                                Ok(PtyLifecycleEvent::Started {
+                                    connection_id,
+                                    generation,
+                                }) => {
+                                    active_pty_generations.insert(connection_id, generation);
+                                }
+                                Ok(PtyLifecycleEvent::Closed {
+                                    connection_id,
+                                    generation,
+                                }) => {
+                                    if should_remove_pty_state(
+                                        active_pty_generations.get(&connection_id).copied(),
+                                        generation,
+                                    ) {
+                                        active_pty_generations.remove(&connection_id);
+                                        output_controls.lock().await.remove(&connection_id);
+                                    }
+                                }
+                                Ok(PtyLifecycleEvent::None) => {}
+                                Err(e) => {
+                                    let error = WsMessage::Error {
+                                        message: format!("Error handling message: {}", e),
+                                    };
+                                    let _ = send_control(&tx, &error).await?;
+                                }
                             }
                         }
-                        _ => {
-                            tracing::warn!("Unknown binary command: {}", data[0]);
+                        Ok(Message::Close(frame)) => {
+                            let (code, reason) = frame
+                                .as_ref()
+                                .map(|f| (Some(f.code), f.reason.as_str()))
+                                .unwrap_or((None, ""));
+                            tracing::warn!("[WS] close frame from client (code={code:?} reason={reason:?}) with {} active PTY session(s)", active_pty_generations.len());
+                            break;
+                        }
+                        Ok(Message::Ping(_)) | Ok(Message::Frame(_)) => {}
+                        Ok(Message::Pong(_)) => {
+                            last_pong = tokio::time::Instant::now();
+                        }
+                        Err(e) => {
+                            tracing::error!("[WS] socket error: {} ({} active PTY session(s))", e, active_pty_generations.len());
+                            break;
                         }
                     }
                 }
-                Ok(Message::Text(text)) => {
-                    tracing::debug!("Received text message: {}", text);
-                    let ws_msg: WsMessage = match serde_json::from_str(&text) {
-                        Ok(msg) => msg,
-                        Err(e) => {
-                            let error = WsMessage::Error {
-                                message: format!("Invalid message format: {}", e),
-                            };
-                            let _ = send_control(&tx, &error).await?;
-                            continue;
-                        }
-                    };
-                    match self
-                        .handle_message(ws_msg, tx.clone(), output_controls.clone())
-                        .await
-                    {
-                        Ok(PtyLifecycleEvent::Started {
-                            connection_id,
-                            generation,
-                        }) => {
-                            active_pty_generations.insert(connection_id, generation);
-                        }
-                        Ok(PtyLifecycleEvent::Closed {
-                            connection_id,
-                            generation,
-                        }) => {
-                            if should_remove_pty_state(
-                                active_pty_generations.get(&connection_id).copied(),
-                                generation,
-                            ) {
-                                active_pty_generations.remove(&connection_id);
-                                output_controls.lock().await.remove(&connection_id);
-                            }
-                        }
-                        Ok(PtyLifecycleEvent::None) => {}
-                        Err(e) => {
-                            let error = WsMessage::Error {
-                                message: format!("Error handling message: {}", e),
-                            };
-                            let _ = send_control(&tx, &error).await?;
-                        }
+                _ = heartbeat.tick() => {
+                    if last_pong.elapsed() > WS_HEARTBEAT_TIMEOUT {
+                        tracing::warn!("[WS] client unresponsive (no pong within {WS_HEARTBEAT_TIMEOUT:?}); closing ({} active PTY session(s))", active_pty_generations.len());
+                        break;
                     }
-                }
-                Ok(Message::Close(_)) => {
-                    tracing::info!("WebSocket connection closed by client");
-                    break;
-                }
-                Ok(Message::Ping(_)) | Ok(Message::Pong(_)) | Ok(Message::Frame(_)) => {}
-                Err(e) => {
-                    tracing::error!("WebSocket error: {}", e);
-                    break;
+                    // Best-effort ping through the sender task. A full queue is
+                    // normal backpressure during heavy output — skip the ping.
+                    // Only a closed queue means the sender task exited (client
+                    // socket closed), which should tear the connection down.
+                    match tx.try_send(Message::Ping(Vec::new().into())) {
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                            tracing::warn!("WebSocket ping send failed — sender task exited; closing");
+                            break;
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+                        Ok(()) => {}
+                    }
                 }
             }
         }

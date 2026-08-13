@@ -234,10 +234,40 @@ fn default_menu_text(key: &str) -> String {
     .to_string()
 }
 
+fn init_logging() {
+    use tracing_subscriber::prelude::*;
+
+    // Stderr stays useful in `tauri dev`; in release builds (no console) the
+    // same events are written to a daily rolling log so idle-drop reconnects
+    // can be diagnosed after the fact. Location on Windows:
+    //   %LOCALAPPDATA%\com.aiden.r-shell\logs\r-shell.log.YYYY-MM-DD
+    let log_dir = dirs::data_local_dir()
+        .map(|base| base.join("com.aiden.r-shell").join("logs"))
+        .unwrap_or_else(std::env::temp_dir);
+    if let Err(e) = std::fs::create_dir_all(&log_dir) {
+        eprintln!("[r-shell] failed to create log dir {}: {}", log_dir.display(), e);
+    }
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_writer(tracing_appender::rolling::daily(&log_dir, "r-shell.log"))
+        .with_ansi(false);
+    let stderr_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr);
+    tracing_subscriber::registry()
+        .with(file_layer)
+        .with(stderr_layer)
+        .with(tracing_subscriber::filter::LevelFilter::INFO)
+        .init();
+    tracing::info!(
+        "r-shell {} logging initialized (log dir: {})",
+        env!("CARGO_PKG_VERSION"),
+        log_dir.display()
+    );
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Initialize tracing
-    tracing_subscriber::fmt::init();
+    // Initialize tracing (stderr + rolling file for diagnostics)
+    init_logging();
 
     // Create connection manager
     let connection_manager = Arc::new(ConnectionManager::new());

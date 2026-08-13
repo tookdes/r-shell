@@ -752,7 +752,7 @@ export function PtyTerminal({
       };
 
       ws.onerror = (error) => {
-        console.error('[PTY Terminal] WebSocket error:', error);
+        console.error('[PTY Terminal] WebSocket error (will trigger onclose reconnect):', error);
         term.write('\r\n\x1b[31m[WebSocket error]\x1b[0m\r\n');
         // Report disconnected status on WebSocket error
         if (connectionStatusRef.current !== 'disconnected') {
@@ -761,8 +761,13 @@ export function PtyTerminal({
         }
       };
 
-      ws.onclose = () => {
-        console.log('[PTY Terminal] WebSocket closed');
+      ws.onclose = (event) => {
+        console.log('[PTY Terminal] WebSocket closed', {
+          code: event.code,
+          reason: event.reason,
+          wasClean: event.wasClean,
+          hadEverConnected: hasEverConnected,
+        });
         if (isRunning) {
           if (!isAutoReconnectEnabled()) {
             term.write(`\r\n\x1b[31m[${i18n.t('ptyTerminal.connectionClosedManualReconnect')}]\x1b[0m\r\n`);
@@ -778,6 +783,7 @@ export function PtyTerminal({
           // Auto-reconnect with exponential backoff so the user doesn't have
           // to manually click Reconnect every time the network hiccups.
           if (hasEverConnected) {
+            console.warn('[PTY Terminal] WS dropped after established session - scheduling FULL reconnect (new shell)', { code: event.code, reason: event.reason, dropAttempt: autoReconnectAfterDropRef.current });
             const dropAttempt = autoReconnectAfterDropRef.current;
             if (dropAttempt >= MAX_AUTO_RECONNECT_AFTER_DROP) {
               // Exhausted auto-reconnect attempts — ask user to act manually.

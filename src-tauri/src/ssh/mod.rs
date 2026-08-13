@@ -178,6 +178,39 @@ impl client::Handler for Client {
         )
         .await)
     }
+
+    /// Captures WHY an established SSH connection ended. Without this the
+    /// terminal only ever sees a generic "PTY connection closed", which hides
+    /// the root cause (keepalive timeout, socket error, server disconnect...).
+    /// The reason is logged to the file logger so idle-drop reconnects can be
+    /// diagnosed from `%LOCALAPPDATA%\com.aiden.r-shell\logs\r-shell.log.*`.
+    async fn disconnected(
+        &mut self,
+        reason: russh::client::DisconnectReason<Self::Error>,
+    ) -> Result<(), Self::Error> {
+        match &reason {
+            russh::client::DisconnectReason::ReceivedDisconnect(info) => {
+                tracing::warn!(
+                    "[SSH] {}:{} disconnected by server: {:?}",
+                    self.host,
+                    self.port,
+                    info
+                );
+            }
+            russh::client::DisconnectReason::Error(error) => {
+                tracing::error!(
+                    "[SSH] {}:{} connection lost (this triggers the terminal reconnect): {:?}",
+                    self.host,
+                    self.port,
+                    error
+                );
+            }
+        }
+        match reason {
+            russh::client::DisconnectReason::ReceivedDisconnect(_) => Ok(()),
+            russh::client::DisconnectReason::Error(error) => Err(error),
+        }
+    }
 }
 
 /// Load a private key from inline PEM content or a filesystem path.
@@ -496,13 +529,13 @@ impl SshClient {
                 while let Some(data) = input_rx.recv().await {
                     // Write data immediately
                     if let Err(e) = writer.write_all(&data).await {
-                        eprintln!("[PTY] Failed to send data to SSH: {}", e);
+                        tracing::warn!("[PTY] Failed to send data to SSH: {}", e);
                         break;
                     }
                     // Critical: flush immediately after write (like ttyd)
                     // This ensures data is sent to PTY without buffering delay
                     if let Err(e) = writer.flush().await {
-                        eprintln!("[PTY] Failed to flush data to SSH: {}", e);
+                        tracing::warn!("[PTY] Failed to flush data to SSH: {}", e);
                         break;
                     }
                 }
@@ -554,11 +587,11 @@ impl SshClient {
                                     }
                                 }
                                 Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
-                                    eprintln!("[PTY] Channel closed");
+                                    tracing::warn!("[PTY] Channel closed (remote shell ended or SSH connection lost)");
                                     break;
                                 }
                                 Some(ChannelMsg::ExitStatus { exit_status }) => {
-                                    eprintln!("[PTY] Process exited with status: {}", exit_status);
+                                    tracing::info!("[PTY] Process exited with status: {}", exit_status);
                                 }
                                 _ => {}
                             }
@@ -567,9 +600,9 @@ impl SshClient {
                             match resize {
                                 Some((cols, rows)) => {
                                     if let Err(e) = channel.window_change(cols, rows, 0, 0).await {
-                                        eprintln!("[PTY] Failed to send window change: {}", e);
+                                        tracing::warn!("[PTY] Failed to send window change: {}", e);
                                     } else {
-                                        eprintln!("[PTY] Window changed to {}x{}", cols, rows);
+                                        tracing::debug!("[PTY] Window changed to {}x{}", cols, rows);
                                     }
                                 }
                                 None => {
