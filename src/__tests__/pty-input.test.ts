@@ -1,5 +1,27 @@
 import { describe, it, expect } from 'vitest';
-import { encodeModifiedEnterCsiU, normalizePtyInput } from '../lib/pty-input';
+import { buildPtyInputFrame, encodeModifiedEnterCsiU, normalizePtyInput } from '../lib/pty-input';
+
+describe('buildPtyInputFrame', () => {
+  it('preserves binary protocol bytes exactly', () => {
+    const id = new TextEncoder().encode('session-1');
+    const bytes = Uint8Array.from([0x00, 0x0a, 0x0d, 0x18, 0xff]);
+    const frame = buildPtyInputFrame(id, bytes);
+
+    expect(Array.from(frame.subarray(0, 3))).toEqual([0x00, 0x00, id.length]);
+    expect(new TextDecoder().decode(frame.subarray(3, 3 + id.length))).toBe('session-1');
+    expect(Array.from(frame.subarray(3 + id.length))).toEqual(Array.from(bytes));
+  });
+
+  it('uses a big-endian two-byte connection id length', () => {
+    const id = new Uint8Array(300);
+    const frame = buildPtyInputFrame(id, new Uint8Array());
+    expect(Array.from(frame.subarray(0, 3))).toEqual([0x00, 0x01, 0x2c]);
+  });
+
+  it('rejects ids that cannot fit in the frame header', () => {
+    expect(() => buildPtyInputFrame(new Uint8Array(0x10000), new Uint8Array())).toThrow(RangeError);
+  });
+});
 
 describe('normalizePtyInput (#37 line continuation)', () => {
   it('keeps bare CR unchanged', () => {

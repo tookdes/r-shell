@@ -15,10 +15,14 @@ import { toast } from 'sonner';
 import { signalReady } from '../lib/restoration-manager';
 import { useTerminalCallbacks } from '../lib/terminal-callbacks-context';
 import { loadConnectionTransportSettings } from '../lib/connection-transport-settings';
-import { encodeModifiedEnterCsiU, normalizePtyInput } from '../lib/pty-input';
+import { buildPtyInputFrame, encodeModifiedEnterCsiU, normalizePtyInput } from '../lib/pty-input';
 import i18n from '../lib/i18n';
 import { registerTerminalWorkingDirectoryHandler } from '../lib/terminal-working-directory';
 import { TERMINAL_COMMAND_EVENT, type TerminalCommandDetail } from '../lib/terminal-commands';
+import {
+  createZmodemTransferController,
+  type ZmodemTransferController,
+} from '../lib/zmodem-transfer';
 import '@xterm/xterm/css/xterm.css';
 
 interface PtyTerminalProps {
@@ -123,32 +127,28 @@ export function PtyTerminal({
   // mount) always reads the current preference without rebuilding the session.
   const sendModifiedEnterRef = React.useRef(false);
 
-  const sendInputToPty = React.useCallback((data: string): boolean => {
+  const sendRawInputToPty = React.useCallback((dataBytes: Uint8Array): boolean => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       return false;
     }
+
+    const frame = buildPtyInputFrame(connectionIdBytesRef.current!, dataBytes);
+    ws.send(frame.buffer);
+    return true;
+  }, [connectionId]);
+
+  const sendInputToPty = React.useCallback((data: string): boolean => {
 
     // PTY shells expect CR as the line terminator. Never forward CRLF:
     // after a trailing `\`, bash line-continuation is "backslash + single
     // newline". Sending `\r\n` becomes two line ends (continue, then empty
     // submit), so `ls \` + Enter + `-a` runs as two commands (#37).
     //
-    // Binary fast path (symmetric with the backend output frame encoding):
-    //   [0x00][id_len: u16 BE][connection_id bytes][data bytes]
-    // Avoids JSON array-of-bytes serialisation on every keystroke / paste.
     const normalizedInput = normalizePtyInput(data);
     const dataBytes = inputEncoderRef.current.encode(normalizedInput);
-    const idBytes = connectionIdBytesRef.current!;
-    const payload = new Uint8Array(3 + idBytes.length + dataBytes.length);
-    payload[0] = 0x00;
-    payload[1] = (idBytes.length >> 8) & 0xff;
-    payload[2] = idBytes.length & 0xff;
-    payload.set(idBytes, 3);
-    payload.set(dataBytes, 3 + idBytes.length);
-    ws.send(payload.buffer);
-    return true;
-  }, [connectionId]);
+    return sendRawInputToPty(dataBytes);
+  }, [sendRawInputToPty]);
 
   const pasteClipboardIntoPty = React.useCallback(async () => {
     try {
@@ -422,6 +422,8 @@ export function PtyTerminal({
     let writeBuffer = '';
     let watermark = 0;
     let rafId: number | null = null;
+    let zmodemController: ZmodemTransferController | null = null;
+    let zmodemActive = false;
         
     // CRITICAL: Wait for terminal to have proper dimensions before connecting
     // Hidden terminals (display: none) may have cols=10, rows=5 which breaks PTY
@@ -587,6 +589,51 @@ export function PtyTerminal({
         }
       };
 
+      // Do not arm ZMODEM detection until the PTY is actually started. The
+      // dynamic import normally resolves well before then, but buffering any
+      // early output makes initialization timing irrelevant.
+      const pendingZmodemPayloads: Uint8Array[] = [];
+      let zmodemReady = false;
+
+      void createZmodemTransferController({
+        send: sendRawInputToPty,
+        writeTerminal(bytes) {
+          if (bytes.length > 0) {
+            enqueueOutput(outputDecoder.decode(bytes, { stream: true }));
+          }
+        },
+        setActive(active) {
+          zmodemActive = active;
+        },
+        notifySuccess(message) {
+          toast.success(message);
+        },
+        notifyError(message) {
+          toast.error(message);
+        },
+        notifyInfo(message) {
+          toast.info(message);
+        },
+      }).then((controller) => {
+        if (!isRunning || ws.readyState === WebSocket.CLOSED) {
+          controller.abort();
+          return;
+        }
+        zmodemController = controller;
+        zmodemReady = true;
+        for (const payload of pendingZmodemPayloads) {
+          if (controller.consume(payload)) grantCredits(1);
+        }
+        pendingZmodemPayloads.length = 0;
+      }).catch((error: unknown) => {
+        console.error('[PTY Terminal] Failed to initialize ZMODEM support:', error);
+        zmodemReady = true;
+        for (const payload of pendingZmodemPayloads) {
+          enqueueOutput(outputDecoder.decode(payload, { stream: true }));
+        }
+        pendingZmodemPayloads.length = 0;
+      });
+
       ws.onmessage = (event) => {
         // Binary frames carry raw PTY output.
         // Format: [0x01][id_len: u16 BE][connection_id bytes][payload bytes]
@@ -601,7 +648,24 @@ export function PtyTerminal({
           const payload = data.subarray(payloadOffset);
           if (payload.length === 0) return;
           onOutputRef.current?.(connectionId);
-          enqueueOutput(outputDecoder.decode(payload, { stream: true }));
+          if (zmodemReady && zmodemController) {
+            try {
+              const consumedByZmodem = zmodemController.consume(payload);
+              if (consumedByZmodem) {
+                // ZMODEM consumes frames without waiting for xterm's write queue,
+                // so immediately return the backend flow-control permit.
+                grantCredits(1);
+              }
+            } catch (error) {
+              console.error('[PTY Terminal] ZMODEM protocol error:', error);
+              zmodemController.abort();
+              grantCredits(1);
+            }
+          } else if (!zmodemReady) {
+            pendingZmodemPayloads.push(payload.slice());
+          } else {
+            enqueueOutput(outputDecoder.decode(payload, { stream: true }));
+          }
           return;
         }
 
@@ -791,6 +855,12 @@ export function PtyTerminal({
 
     // Handle user input
     const inputDisposable = term.onData((data: string) => {
+      // Protocol bytes and keyboard input cannot safely share the PTY while a
+      // ZMODEM transfer is active. Ctrl+C is handled via transfer cancellation.
+      if (zmodemActive) {
+        if (data === '\x03') zmodemController?.abort(false);
+        return;
+      }
       sendInputToPty(data);
     });
 
@@ -880,6 +950,9 @@ export function PtyTerminal({
       }
       writeBuffer = '';
       watermark = 0;
+      zmodemController?.abort();
+      zmodemController = null;
+      zmodemActive = false;
 
       // Close PTY connection via WebSocket — include generation so the
       // backend can ignore this close if a newer session already exists.
@@ -936,7 +1009,7 @@ export function PtyTerminal({
       term.dispose();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connectionId, host, username, terminalKey, reconnectKey, sendInputToPty, onWorkingDirectoryChange]);
+  }, [connectionId, host, username, terminalKey, reconnectKey, sendInputToPty, sendRawInputToPty, onWorkingDirectoryChange]);
   // NOTE: themeKey, appearanceKey, and connectionName are intentionally NOT
   // in the deps above. Including them would tear down the WebSocket + PTY
   // session on every theme change (e.g. macOS auto Dark/Light switch), killing
