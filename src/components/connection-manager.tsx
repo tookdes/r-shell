@@ -123,6 +123,12 @@ export function ConnectionManager({
   // Reload connections when active connections or refreshTrigger changes,
   // preserving expand state across tree rebuilds.
   useEffect(() => {
+    const onRestored = () => setConnections(loadConnections());
+    window.addEventListener('r-shell:connections-restored', onRestored);
+    return () => window.removeEventListener('r-shell:connections-restored', onRestored);
+  }, [loadConnections, setConnections]);
+
+  useEffect(() => {
     const newTree = loadConnections();
     setConnections(prev => {
       // Merge isExpanded from the previous tree to preserve the user's
