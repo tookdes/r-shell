@@ -589,12 +589,10 @@ export function PtyTerminal({
         }
       };
 
-      // Do not arm ZMODEM detection until the PTY is actually started. The
-      // dynamic import normally resolves well before then, but buffering any
-      // early output makes initialization timing irrelevant.
-      const pendingZmodemPayloads: Uint8Array[] = [];
-      let zmodemReady = false;
-
+      // ZMODEM detection runs as a side-channel. Normal terminal output is
+      // displayed immediately and byte-identically to the pre-ZMODEM build —
+      // it is never buffered and never routed through the sentry while idle.
+      // The sentry only takes over when a real ZMODEM session is active.
       void createZmodemTransferController({
         send: sendRawInputToPty,
         writeTerminal(bytes) {
@@ -620,18 +618,8 @@ export function PtyTerminal({
           return;
         }
         zmodemController = controller;
-        zmodemReady = true;
-        for (const payload of pendingZmodemPayloads) {
-          if (controller.consume(payload)) grantCredits(1);
-        }
-        pendingZmodemPayloads.length = 0;
       }).catch((error: unknown) => {
         console.error('[PTY Terminal] Failed to initialize ZMODEM support:', error);
-        zmodemReady = true;
-        for (const payload of pendingZmodemPayloads) {
-          enqueueOutput(outputDecoder.decode(payload, { stream: true }));
-        }
-        pendingZmodemPayloads.length = 0;
       });
 
       ws.onmessage = (event) => {
@@ -648,22 +636,31 @@ export function PtyTerminal({
           const payload = data.subarray(payloadOffset);
           if (payload.length === 0) return;
           onOutputRef.current?.(connectionId);
-          if (zmodemReady && zmodemController) {
+          if (zmodemController) {
+            const wasActive = zmodemController.isActive();
+            if (!wasActive) {
+              // No active ZMODEM session: display this frame immediately and
+              // byte-identically to the pre-ZMODEM build, then feed the sentry
+              // as a detection side-channel (its echo is suppressed while idle).
+              enqueueOutput(outputDecoder.decode(payload, { stream: true }));
+            }
             try {
-              const consumedByZmodem = zmodemController.consume(payload);
-              if (consumedByZmodem) {
-                // ZMODEM consumes frames without waiting for xterm's write queue,
-                // so immediately return the backend flow-control permit.
-                grantCredits(1);
-              }
+              zmodemController.consume(payload);
             } catch (error) {
               console.error('[PTY Terminal] ZMODEM protocol error:', error);
+              if (wasActive) {
+                // Never lose terminal output: recover this frame directly.
+                enqueueOutput(outputDecoder.decode(payload, { stream: true }));
+              }
               zmodemController.abort();
+            }
+            if (wasActive) {
+              // The sentry consumed this frame as ZMODEM protocol data without
+              // waiting for xterm's write queue — return the flow permit now.
               grantCredits(1);
             }
-          } else if (!zmodemReady) {
-            pendingZmodemPayloads.push(payload.slice());
           } else {
+            // ZMODEM not initialized yet: display immediately, never buffer.
             enqueueOutput(outputDecoder.decode(payload, { stream: true }));
           }
           return;
@@ -763,9 +760,9 @@ export function PtyTerminal({
 
       ws.onclose = (event) => {
         console.log('[PTY Terminal] WebSocket closed', {
-          code: event.code,
-          reason: event.reason,
-          wasClean: event.wasClean,
+          code: event?.code,
+          reason: event?.reason,
+          wasClean: event?.wasClean,
           hadEverConnected: hasEverConnected,
         });
         if (isRunning) {
@@ -783,7 +780,7 @@ export function PtyTerminal({
           // Auto-reconnect with exponential backoff so the user doesn't have
           // to manually click Reconnect every time the network hiccups.
           if (hasEverConnected) {
-            console.warn('[PTY Terminal] WS dropped after established session - scheduling FULL reconnect (new shell)', { code: event.code, reason: event.reason, dropAttempt: autoReconnectAfterDropRef.current });
+            console.warn('[PTY Terminal] WS dropped after established session - scheduling FULL reconnect (new shell)', { code: event?.code, reason: event?.reason, dropAttempt: autoReconnectAfterDropRef.current });
             const dropAttempt = autoReconnectAfterDropRef.current;
             if (dropAttempt >= MAX_AUTO_RECONNECT_AFTER_DROP) {
               // Exhausted auto-reconnect attempts — ask user to act manually.

@@ -222,9 +222,18 @@ export async function createZmodemTransferController(
       .catch((error: unknown) => fail(session, error));
   };
 
+  // True when the current consume() call entered with an active session.
+  // When idle (no ZMODEM session), pty-terminal displays the frame directly
+  // BEFORE calling consume(), so echoing here would duplicate output. Echoing
+  // must still happen for the frame in which a session ends so the trailing
+  // bytes after the ZMODEM "OO" marker are not lost.
+  let consumeHadActiveSession = false;
+
   const sentry: Sentry = new zmodem.Sentry({
     to_terminal(octets) {
-      callbacks.writeTerminal(Uint8Array.from(octets));
+      if (consumeHadActiveSession && octets.length > 0) {
+        callbacks.writeTerminal(Uint8Array.from(octets));
+      }
     },
     sender(octets) {
       if (!callbacks.send(Uint8Array.from(octets))) {
@@ -250,9 +259,9 @@ export async function createZmodemTransferController(
 
   return {
     consume(bytes) {
-      const wasActive = activeSession !== null;
+      consumeHadActiveSession = activeSession !== null;
       sentry.consume(bytes);
-      return wasActive || activeSession !== null;
+      return activeSession !== null;
     },
     isActive() {
       return activeSession !== null;
