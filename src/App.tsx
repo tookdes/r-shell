@@ -44,6 +44,7 @@ import type { TerminalTab } from './lib/terminal-group-types';
 import { Toaster } from './components/ui/sonner';
 import { toast } from 'sonner';
 import { dispatchTerminalCommand, type TerminalCommand } from './lib/terminal-commands';
+import { backupConnectionsNow, restoreConnectionsIfEmpty } from './lib/connection-backup';
 
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from './components/ui/resizable';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs';
@@ -161,6 +162,38 @@ function AppContent() {
   // Apply stored language preference (follows OS locale when set to "auto")
   useEffect(() => {
     void applyLanguageFromPreference();
+  }, []);
+
+  // Restore connection data from the on-disk backup if localStorage was reset
+  // (e.g. a WebView2 data reset, or an older installer that wiped
+  // %LOCALAPPDATA%/<bundle-id> on upgrade). Then keep a periodic backup as a
+  // safety net so connections survive any future storage loss.
+  useEffect(() => {
+    let disposed = false;
+    const timer = window.setInterval(() => {
+      void backupConnectionsNow();
+    }, 60_000);
+    const onBeforeUnload = () => {
+      void backupConnectionsNow();
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+
+    void restoreConnectionsIfEmpty().then((restored) => {
+      if (disposed) return;
+      if (restored) {
+        // Let the connection manager re-read the restored data.
+        window.dispatchEvent(new Event('r-shell:connections-restored'));
+      }
+      // Snapshot right away so the backup exists even if the app never
+      // changes anything else.
+      void backupConnectionsNow();
+    });
+
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      window.removeEventListener('beforeunload', onBeforeUnload);
+    };
   }, []);
 
   useEffect(() => {
