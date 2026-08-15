@@ -174,6 +174,8 @@ describe('IntegratedFileBrowser terminal directory following', () => {
   });
 
   it('returns to the same terminal directory after manual navigation on the next prompt', async () => {
+    // Generous timeout: this follow-effect test chains several async waits
+    // and has a history of timing out on slow CI runners (pre-existing flake).
     const { rerender } = render(
       <IntegratedFileBrowser
         connectionId="conn-manual"
@@ -188,12 +190,20 @@ describe('IntegratedFileBrowser terminal directory following', () => {
         mocks.invoke.mock.calls.filter(([, args]) => args.path === '/srv/app'),
       ).toHaveLength(1);
     });
+    // Wait for the follow navigation to FULLY commit (breadcrumb renders
+    // '/srv/app') before clicking Home. Otherwise navigateTo('/home') can no-op
+    // while currentPath is still the initial '/home', and the pending follow
+    // load then lands on /srv/app — making the findByTitle('/home') below time
+    // out under CI timing jitter (pre-existing flake, seen on Windows + macOS).
+    await screen.findByTitle('/srv/app');
     fireEvent.click(screen.getByTitle('Home'));
+    // Require the Home click to trigger its own load (1 mount safety-net call
+    // + 1 navigation call) — a bare "called with" can be satisfied by the
+    // mount's safety-net loadFiles('/home') and masks a no-op navigation.
     await waitFor(() => {
-      expect(mocks.invoke).toHaveBeenCalledWith('list_files', {
-        connectionId: 'conn-manual',
-        path: '/home',
-      });
+      expect(
+        mocks.invoke.mock.calls.filter(([, args]) => args.path === '/home'),
+      ).toHaveLength(2);
     });
     // Wait for the Home navigation to fully commit (breadcrumb renders '/home')
     // before bumping the terminal sequence. Otherwise the follow effect can still
@@ -216,7 +226,7 @@ describe('IntegratedFileBrowser terminal directory following', () => {
         mocks.invoke.mock.calls.filter(([, args]) => args.path === '/srv/app'),
       ).toHaveLength(2);
     });
-  });
+  }, 15000);
 
   it('keeps the last good directory and warns once when a terminal path is inaccessible', async () => {
     mocks.invoke.mockImplementation(async (_command: string, args: { path: string }) => {

@@ -870,8 +870,31 @@ function AppContent() {
     }
   }, [handleTabClose]);
 
+  // Close every tab in a group. Runs backend cleanup for file-browser
+  // sessions first (CLOSE_ALL_TABS is reducer-only and would otherwise
+  // leave SFTP/FTP connections alive), then empties the group.
+  const handleCloseAllTabs = useCallback(async (groupId: string) => {
+    const group = state.groups[groupId];
+    if (!group) return;
+    for (const tab of group.tabs) {
+      // Disconnect SFTP/FTP sessions when closing file-browser tabs
+      if (tab.tabType === 'file-browser') {
+        try {
+          if (tab.protocol === 'SFTP') {
+            await invoke('sftp_standalone_disconnect', { connection_id: tab.id });
+          } else if (tab.protocol === 'FTP') {
+            await invoke('ftp_disconnect', { connection_id: tab.id });
+          }
+        } catch {
+          // Ignore disconnect errors on tab close
+        }
+      }
+    }
+    dispatch({ type: 'CLOSE_ALL_TABS', groupId });
+  }, [state.groups, dispatch]);
 
-  const handleNewTab = useCallback(() => {
+  const handleNewTab = useCallback((folderPath?: string) => {
+    setConnectionInitialFolder(folderPath);
     setConnectionDialogOpen(true);
     setEditingConnection(null);
     setPendingConnectionId(null);
@@ -1324,6 +1347,14 @@ function AppContent() {
             description: error instanceof Error ? error.message : String(error),
           });
         }
+      } else {
+        // SSH / Telnet / Raw / Serial reconnect. The backend SSH session was
+        // already (re-)established by the dialog's own ssh_connect invoke, so
+        // remount PtyTerminal to open a fresh WebSocket/PTY session on it.
+        // (RECONNECT_TAB increments reconnectCount, changing PtyTerminal's key
+        // in terminal-tab-portals so it remounts; the tab status self-heals to
+        // 'connected' once the new PTY session reports ready.)
+        dispatch({ type: 'RECONNECT_TAB', tabId });
       }
     } else {
       if (isDesktop) {
@@ -2063,6 +2094,7 @@ function AppContent() {
                       onCloseTabs: closeMultipleTabs,
                       closeTabShortcut: keyboardShortcutSettings.closeTab,
                       onWorkingDirectoryChange: handleWorkingDirectoryChange,
+                      onCloseAllTabs: handleCloseAllTabs,
                     }}>
                       <ErrorBoundary label={t('app.terminal')}>
                         <GridRenderer node={state.gridLayout} path={[]} />
