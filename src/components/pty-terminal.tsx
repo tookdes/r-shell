@@ -8,6 +8,8 @@ import { SearchAddon } from '@xterm/addon-search';
 import { ClipboardAddon } from '@xterm/addon-clipboard';
 import { invoke } from '@tauri-apps/api/core';
 import { readText as readClipboardText, writeText as writeClipboardText } from '@tauri-apps/plugin-clipboard-manager';
+import { save } from '@tauri-apps/plugin-dialog';
+import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { loadAppearanceSettings, getThemeAwareTerminalOptions, getThemeAwareTerminalTheme, terminalThemes, defaultTerminalTheme } from '../lib/terminal-config';
 import { TerminalContextMenu } from './terminal/terminal-context-menu';
 import { TerminalSearchBar, type TerminalSearchState } from './terminal/terminal-search-bar';
@@ -1185,16 +1187,13 @@ export function PtyTerminal({
         }
       }
 
-      // Create blob and download
-      const blob = new Blob([content], { type: 'text/plain' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `terminal-output-${new Date().toISOString().slice(0, 10)}.txt`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      const filePath = await save({
+        defaultPath: `terminal-output-${new Date().toISOString().slice(0, 10)}.txt`,
+        filters: [{ name: 'Text', extensions: ['txt', 'log'] }],
+      });
+      if (!filePath) return;
+
+      await writeTextFile(filePath, content);
       
       toast.success(t('ptyTerminal.outputSaved'));
     } catch (error) {

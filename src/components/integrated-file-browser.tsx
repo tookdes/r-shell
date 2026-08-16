@@ -118,6 +118,10 @@ const treeStateCache = new Map<string, {
 const treeScrollCache = new Map<string, number>();
 const FOLLOW_TERMINAL_DIRECTORY_KEY = 'rshell-follow-terminal-directory';
 
+function remoteChildPath(directory: string, childName: string): string {
+  return directory === '/' ? `/${childName}` : `${directory}/${childName}`;
+}
+
 export function IntegratedFileBrowser({ connectionId, host: _host, isConnected, terminalWorkingDirectory, onClose: _onClose, onOpenInLogMonitor, onOpenInEditor }: IntegratedFileBrowserProps) {
   const { t } = useTranslation();
   const [currentPath, setCurrentPath] = useState('/home');
@@ -874,10 +878,7 @@ export function IntegratedFileBrowser({ connectionId, host: _host, isConnected, 
   };
 
   const handleFileDoubleClick = async (file: FileItem) => {
-    console.log('handleFileDoubleClick called', { file, currentPath, connectionId });
-    
     if (file.type === 'directory') {
-      console.log('Navigating to directory:', file.path);
       navigateTo(file.path);
     } else {
       // Open file in editor tab
@@ -905,15 +906,12 @@ export function IntegratedFileBrowser({ connectionId, host: _host, isConnected, 
   };
 
   const handleFileClick = (file: FileItem, event: React.MouseEvent) => {
-    console.log('handleFileClick called', { file, ctrlKey: event.ctrlKey, metaKey: event.metaKey });
-    
     if (event.ctrlKey || event.metaKey) {
       // Ctrl/Cmd + Click: toggle selection
       handleFileSelect(file.name, event);
     } else {
       // Regular click on directory: navigate into it
       if (file.type === 'directory') {
-        console.log('Click - navigating to directory:', file.path);
         navigateTo(file.path);
       }
       // Regular click on file: do nothing (or optionally preview)
@@ -1078,7 +1076,7 @@ export function IntegratedFileBrowser({ connectionId, host: _host, isConnected, 
     const folderName = prompt(t('fileBrowser.toast.enterFolderName'));
     if (folderName) {
       try {
-        const folderPath = currentPath === '/' ? `/${folderName}` : `${currentPath}/${folderName}`;
+        const folderPath = remoteChildPath(currentPath, folderName);
         await invoke<boolean>('create_directory', {
           connectionId,
           path: folderPath
@@ -1095,21 +1093,14 @@ export function IntegratedFileBrowser({ connectionId, host: _host, isConnected, 
   };
 
   function handleDeleteFile(file: FileItem) {
-    console.log('[FileBrowser] Opening delete confirmation for:', file.name);
     setDeletingFile(file);
   };
 
   const confirmDeleteFile = async () => {
     if (!deletingFile) return;
     
-    console.log('[FileBrowser] Confirming delete for:', deletingFile.name);
     try {
       const filePath = deletingFile.path;
-      console.log('[FileBrowser] Deleting file', { 
-        filePath,
-        isDirectory: deletingFile.type === 'directory',
-        connectionId
-      });
 
       await invoke<boolean>('delete_file', {
         connectionId,
@@ -1129,7 +1120,6 @@ export function IntegratedFileBrowser({ connectionId, host: _host, isConnected, 
   };
 
   const cancelDeleteFile = () => {
-    console.log('[FileBrowser] User cancelled deletion');
     setDeletingFile(null);
   };
 
@@ -1147,7 +1137,7 @@ export function IntegratedFileBrowser({ connectionId, host: _host, isConnected, 
     if (clipboard) {
       try {
         for (const file of clipboard.files) {
-          const destPath = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
+          const destPath = remoteChildPath(currentPath, file.name);
           
           if (clipboard.operation === 'copy') {
             await invoke<boolean>('copy_file', {
@@ -1185,8 +1175,8 @@ export function IntegratedFileBrowser({ connectionId, host: _host, isConnected, 
   const handleRenameConfirm = async () => {
     if (renamingFile && newFileName.trim()) {
       try {
-        const oldPath = currentPath === '/' ? `/${renamingFile.name}` : `${currentPath}/${renamingFile.name}`;
-        const newPath = currentPath === '/' ? `/${newFileName}` : `${currentPath}/${newFileName}`;
+        const oldPath = remoteChildPath(currentPath, renamingFile.name);
+        const newPath = remoteChildPath(currentPath, newFileName);
         
         await invoke<boolean>('rename_file', {
           connectionId,
@@ -1213,9 +1203,13 @@ export function IntegratedFileBrowser({ connectionId, host: _host, isConnected, 
   };
 
   const handleCopyPath = (file: FileItem) => {
-    const fullPath = `${currentPath}/${file.name}`;
-    void writeClipboardText(fullPath);
-    toast.success(t('fileBrowser.toast.pathCopied'));
+    void writeClipboardText(file.path).then(() => {
+      toast.success(t('fileBrowser.toast.pathCopied'));
+    }).catch((error) => {
+      toast.error(t('fileBrowser.toast.copyPathFailed'), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    });
   };
 
   const handleFileInfo = (file: FileItem) => {
@@ -1231,7 +1225,7 @@ export function IntegratedFileBrowser({ connectionId, host: _host, isConnected, 
     const fileName = prompt(t('fileBrowser.toast.enterFileName'));
     if (fileName) {
       try {
-        const filePath = currentPath === '/' ? `/${fileName}` : `${currentPath}/${fileName}`;
+        const filePath = remoteChildPath(currentPath, fileName);
         await invoke<boolean>('create_file', {
           connectionId,
           path: filePath,
@@ -1252,7 +1246,7 @@ export function IntegratedFileBrowser({ connectionId, host: _host, isConnected, 
     const newName = `${file.name}_copy`;
     try {
       const sourcePath = file.path;
-      const destPath = currentPath === '/' ? `/${newName}` : `${currentPath}/${newName}`;
+      const destPath = remoteChildPath(currentPath, newName);
       
       await invoke<boolean>('copy_file', {
         connectionId,
@@ -1853,10 +1847,7 @@ export function IntegratedFileBrowser({ connectionId, host: _host, isConnected, 
                       </ContextMenuItem>
                       {onOpenInLogMonitor && (
                         <ContextMenuItem onClick={() => {
-                          const fullPath = currentPath.endsWith('/')
-                            ? `${currentPath}${file.name}`
-                            : `${currentPath}/${file.name}`;
-                          onOpenInLogMonitor(fullPath);
+                          onOpenInLogMonitor(file.path);
                         }}>
                           <ScrollText className="mr-2 h-4 w-4" />
                           {t('fileBrowser.contextMenu.openInLogMonitor')}

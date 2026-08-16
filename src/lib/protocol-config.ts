@@ -83,9 +83,10 @@ export function isRdpProtocol(protocol: string | undefined | null): boolean {
 }
 
 /** Returns true when the protocol is fully implemented end-to-end. */
-export function isProtocolImplemented(protocol: Protocol): boolean {
-  if (isRdpProtocol(protocol)) {
+export function isProtocolImplemented(protocol: string | undefined | null): boolean {
+  const normalized = (protocol ?? '').toUpperCase() as Protocol;
+  if (isRdpProtocol(normalized)) {
     return false;
   }
-  return IMPLEMENTED_PROTOCOLS.includes(protocol);
+  return IMPLEMENTED_PROTOCOLS.includes(normalized);
 }

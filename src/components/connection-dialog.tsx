@@ -26,7 +26,7 @@ import {
   Terminal as TerminalIcon,
   Monitor,
 } from 'lucide-react';
-import { getDefaultPort, getAuthMethods, getHiddenFields, isDesktopProtocol, isRdpProtocol } from '@/lib/protocol-config';
+import { getDefaultPort, getAuthMethods, getHiddenFields, isDesktopProtocol, isProtocolImplemented, isRdpProtocol } from '@/lib/protocol-config';
 
 interface ConnectionDialogProps {
   open: boolean;
@@ -309,10 +309,16 @@ export function ConnectionDialog({
       return;
     }
 
-    if (isRdpProtocol(config.protocol)) {
-      toast.error(t('app.rdpDisabled'), {
-        description: t('app.rdpDisabledDesc'),
-      });
+    if (!isProtocolImplemented(config.protocol)) {
+      if (isRdpProtocol(config.protocol)) {
+        toast.error(t('app.rdpDisabled'), {
+          description: t('app.rdpDisabledDesc'),
+        });
+      } else {
+        toast.error(t('app.protocolUnavailable', { protocol: config.protocol || t('app.unknownProtocol') }), {
+          description: t('app.protocolUnavailableDesc'),
+        });
+      }
       resetConnectionState();
       return;
     }
@@ -655,7 +661,7 @@ const handleCancelConnectionAttempt = async () => {
     // If trying to close while connecting, cancel first then close
     if (!newOpen && isConnecting) {
       // Cancel connection and then close
-      handleCancelConnectionAttempt().then(() => {
+      void handleCancelConnectionAttempt().then(() => {
         resetConnectionState();
         onOpenChange(false);
       });

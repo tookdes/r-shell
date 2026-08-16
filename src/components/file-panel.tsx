@@ -395,8 +395,13 @@ export const FilePanel = forwardRef<FilePanelRef, FilePanelProps>(
     };
 
     const handleCopyPath = (name: string) => {
-      writeClipboardText(pathJoin(currentPath, name));
-      toast.success(t('filePanel.toast.pathCopied'));
+      void writeClipboardText(pathJoin(currentPath, name)).then(() => {
+        toast.success(t('filePanel.toast.pathCopied'));
+      }).catch((err: unknown) => {
+        toast.error(t('filePanel.toast.copyPathFailed'), {
+          description: err instanceof Error ? err.message : String(err),
+        });
+      });
     };
 
     const handleTransfer = () => {
