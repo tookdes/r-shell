@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, ChevronDown, Folder, FolderOpen, Monitor, Server, HardDrive, Plus, Pencil, Copy, Trash2, FolderPlus, FolderEdit, Zap, Clock } from 'lucide-react';
 import { Button } from './ui/button';
@@ -96,12 +96,12 @@ export function ConnectionManager({
     navigator.platform.toUpperCase().includes('MAC'),
   );
   // Load connections from storage
-  const loadConnections = (): ConnectionNode[] => {
+  const loadConnections = useCallback((): ConnectionNode[] => {
     const tree = ConnectionStorageManager.buildConnectionTree(activeConnections);
     return tree.length > 0 ? tree : [];
-  };
+  }, [activeConnections]);
 
-  const [connections, setConnections] = useState<ConnectionNode[]>(loadConnections());
+  const [connections, setConnections] = useState<ConnectionNode[]>(() => loadConnections());
 
   // Folder management state
   const [newFolderDialogOpen, setNewFolderDialogOpen] = useState(false);
@@ -126,7 +126,7 @@ export function ConnectionManager({
     const onRestored = () => setConnections(loadConnections());
     window.addEventListener('r-shell:connections-restored', onRestored);
     return () => window.removeEventListener('r-shell:connections-restored', onRestored);
-  }, [loadConnections, setConnections]);
+  }, [loadConnections]);
 
   useEffect(() => {
     const newTree = loadConnections();
@@ -148,7 +148,7 @@ export function ConnectionManager({
         });
       return mergeExpanded(newTree);
     });
-  }, [activeConnections, refreshTrigger]);
+  }, [loadConnections, refreshTrigger]);
 
   // Handle connection deletion
   const handleDelete = (connectionId: string) => {

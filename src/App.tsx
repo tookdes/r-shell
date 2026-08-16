@@ -16,7 +16,7 @@ import { WelcomeScreen } from './components/welcome-screen';
 import { UpdateChecker } from './components/update-checker';
 import { toConnectionConfig } from './lib/connection-config';
 import { ActiveConnectionsManager, ConnectionStorageManager } from './lib/connection-storage';
-import { isDesktopProtocol, isRdpProtocol } from './lib/protocol-config';
+import { isDesktopProtocol, isProtocolImplemented, isRdpProtocol } from './lib/protocol-config';
 import { registerRestoration, clearAllRestorations } from './lib/restoration-manager';
 import {
   connectionHasCredentials,
@@ -153,6 +153,12 @@ function AppContent() {
     ? activeTab.id
     : null;
 
+  const showUnsupportedProtocolToast = useCallback((protocol: string | undefined | null) => {
+    toast.error(t('app.protocolUnavailable', { protocol: protocol || t('app.unknownProtocol') }), {
+      description: t('app.protocolUnavailableDesc'),
+    });
+  }, [t]);
+
   const runActiveTerminalCommand = useCallback((command: TerminalCommand) => {
     if (activeTerminalId) {
       dispatchTerminalCommand(activeTerminalId, command);
@@ -238,21 +244,38 @@ function AppContent() {
     };
   }, [setLeftSidebarVisible, setRightSidebarVisible]);
 
-  // Filled after handleTabClose is defined; used by keyboard shortcuts.
-  const handleTabCloseRef = useRef<(tabId: string) => void | Promise<void>>(async () => {});
+  const handleTabClose = useCallback(async (tabId: string) => {
+    // Find which group contains this tab, tear down backend resources, then remove it.
+    for (const group of Object.values(state.groups)) {
+      const tab = group.tabs.find(t => t.id === tabId);
+      if (!tab) continue;
 
-  const handleCloseActiveTab = useCallback(() => {
-    if (!activeGroup?.activeTabId) {
-      return;
+      try {
+        if (tab.tabType === 'file-browser') {
+          if (tab.protocol === 'SFTP') {
+            try { await invoke('abort_connection_transfers', { connectionId: tabId }); } catch { /* ignore */ }
+            await invoke('sftp_standalone_disconnect', { connection_id: tabId });
+          } else if (tab.protocol === 'FTP') {
+            await invoke('ftp_disconnect', { connection_id: tabId });
+          }
+        } else if (tab.tabType === 'desktop') {
+          try {
+            await invoke('desktop_disconnect', { connection_id: tabId });
+          } catch {
+            // Desktop backends may not be implemented for every protocol.
+          }
+        } else {
+          // SSH terminal (default) — also cancels any open PTY on the backend.
+          await invoke('ssh_disconnect', { connection_id: tabId });
+        }
+      } catch {
+        // Ignore disconnect errors on tab close; still remove the tab UI.
+      }
+
+      dispatch({ type: 'REMOVE_TAB', groupId: group.id, tabId });
+      break;
     }
-
-    const isLastTab = allTabs.length === 1;
-    dispatch({ type: 'REMOVE_TAB', groupId: activeGroup.id, tabId: activeGroup.activeTabId });
-
-    if (isLastTab) {
-      ActiveConnectionsManager.clearActiveConnections();
-    }
-  }, [activeGroup, allTabs.length, dispatch]);
+  }, [state.groups, dispatch]);
 
   // Keyboard shortcuts: layout + split view
   const splitViewShortcuts = useMemo(() => {
@@ -276,7 +299,7 @@ function AppContent() {
         },
         closeTab: () => {
           if (activeGroup && activeGroup.activeTabId) {
-            void handleTabCloseRef.current(activeGroup.activeTabId);
+            void handleTabClose(activeGroup.activeTabId);
           }
         },
         nextTab: () => {
@@ -296,7 +319,7 @@ function AppContent() {
       },
       keyboardShortcutSettings,
     );
-  }, [state.activeGroupId, state.groups, activeGroup, dispatch, handleCloseActiveTab, keyboardShortcutSettings]);
+  }, [state.activeGroupId, state.groups, activeGroup, dispatch, handleTabClose, keyboardShortcutSettings]);
 
   const layoutShortcuts = useMemo(() => createLayoutShortcuts({
     toggleLeftSidebar,
@@ -330,12 +353,22 @@ function AppContent() {
   useEffect(() => {
     /** Race a promise against a timeout; rejects with a clear message on expiry. */
     function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-      return Promise.race([
-        promise,
-        new Promise<never>((_resolve, reject) =>
-          setTimeout(() => reject(new Error(`Timeout: ${label} did not complete within ${ms / 1000}s`)), ms),
-        ),
-      ]);
+      return new Promise<T>((resolve, reject) => {
+        const timer = window.setTimeout(() => {
+          reject(new Error(`Timeout: ${label} did not complete within ${ms / 1000}s`));
+        }, ms);
+
+        promise.then(
+          (value) => {
+            window.clearTimeout(timer);
+            resolve(value);
+          },
+          (error) => {
+            window.clearTimeout(timer);
+            reject(new Error(error instanceof Error ? error.message : String(error)));
+          },
+        );
+      });
     }
 
     const transportSettings = loadConnectionTransportSettings();
@@ -392,6 +425,16 @@ function AppContent() {
         );
         rememberSessionCredentials(connectionIdToLoad, connectionData);
 
+        const tabAlreadyExists = existingTabIds.has(activeConn.connectionId);
+        if (!isProtocolImplemented(connectionData.protocol)) {
+          console.warn(`Skipping restore for ${connectionData.name}: protocol ${connectionData.protocol} is not available in this build`);
+          if (tabAlreadyExists) {
+            dispatch({ type: 'UPDATE_TAB_STATUS', tabId: activeConn.connectionId, status: 'disconnected' });
+          }
+          failedCount++;
+          continue;
+        }
+
         const isDesktopProto = connectionData.protocol === 'RDP' || connectionData.protocol === 'VNC';
         if (!isDesktopProto && !connectionHasCredentials(connectionData)) {
           console.log(`Connection ${connectionData.name} has no saved credentials, skipping restore`);
@@ -405,7 +448,6 @@ function AppContent() {
           username: connectionData.username,
         });
 
-        const tabAlreadyExists = existingTabIds.has(activeConn.connectionId);
         const isSftp = activeConn.protocol === 'SFTP' || connectionData.protocol === 'SFTP';
         const isFtp = activeConn.protocol === 'FTP' || connectionData.protocol === 'FTP';
         const isFileBrowser = isSftp || isFtp;
@@ -413,16 +455,8 @@ function AppContent() {
           connectionData.protocol === 'RDP' || connectionData.protocol === 'VNC';
 
         try {
-          if (isRdpProtocol(connectionData.protocol)) {
-            console.warn(`Skipping RDP restore for ${connectionData.name}: RDP is disabled`);
-            if (tabAlreadyExists) {
-              dispatch({ type: 'UPDATE_TAB_STATUS', tabId: activeConn.connectionId, status: 'disconnected' });
-            }
-            failedCount++;
-            continue;
-          }
           if (isDesktopRestore) {
-            // VNC restoration (RDP disabled product-wide)
+            // Desktop restoration for supported desktop protocols.
             const proto = connectionData.protocol;
             await withTimeout(
               invoke('desktop_connect', {
@@ -643,23 +677,27 @@ function AppContent() {
     setSelectedConnection(connection);
   };
 
-  const handleConnectionConnect = async (connection: ConnectionNode) => {
+  const handleConnectionConnect = useCallback(async (connection: ConnectionNode): Promise<boolean> => {
     if (connection.type === 'connection') {
       setSelectedConnection(connection);
 
       const connectionDataRaw = ConnectionStorageManager.getConnection(connection.id);
-      if (!connectionDataRaw) return;
+      if (!connectionDataRaw) return false;
       const connectionData = mergeWithSessionCredentials(
         connection.id,
         await decryptConnectionSecrets(connectionDataRaw),
       );
       rememberSessionCredentials(connection.id, connectionData);
 
-      if (isRdpProtocol(connectionData.protocol)) {
-        toast.error(t('app.rdpDisabled'), {
-          description: t('app.rdpDisabledDesc'),
-        });
-        return;
+      if (!isProtocolImplemented(connectionData.protocol)) {
+        if (isRdpProtocol(connectionData.protocol)) {
+          toast.error(t('app.rdpDisabled'), {
+            description: t('app.rdpDisabledDesc'),
+          });
+        } else {
+          showUnsupportedProtocolToast(connectionData.protocol);
+        }
+        return false;
       }
 
       const isSftp = connectionData.protocol === 'SFTP';
@@ -677,7 +715,7 @@ function AppContent() {
           authMethod: connectionData.authMethod || 'password',
         });
         setConnectionDialogOpen(true);
-        return;
+        return false;
       }
 
       // Always use a unique session ID — the backend may still hold a stale
@@ -737,11 +775,13 @@ function AppContent() {
           }
           ConnectionStorageManager.updateLastConnected(connection.id);
           dispatch({ type: 'UPDATE_TAB_STATUS', tabId: sessionId, status: 'connected' });
+          return true;
         } catch (error) {
           dispatch({ type: 'UPDATE_TAB_STATUS', tabId: sessionId, status: 'disconnected' });
           toast.error(t('app.connectionFailed'), {
             description: error instanceof Error ? error.message : String(error),
           });
+          return false;
         }
       } else {
         // SSH connect flow — create a placeholder tab first (shows "Waiting for
@@ -794,15 +834,17 @@ function AppContent() {
             // Switch to 'connecting' — this mounts PtyTerminal which opens WebSocket
             // and sends StartPty. The backend SSH session is ready by now.
             dispatch({ type: 'UPDATE_TAB_STATUS', tabId: sessionId, status: 'connecting' });
+            return true;
           } else {
             console.error('SSH connection failed:', result.error);
             dispatch({ type: 'UPDATE_TAB_STATUS', tabId: sessionId, status: 'disconnected' });
             toast.error(t('app.connectionFailed'), {
-              description: result.error || 'Unable to connect to the server. Please check your credentials and try again.',
+              description: result.error || t('connectionDialog.toast.connectionFailedDesc'),
             });
             setEditingConnection(toConnectionConfig(connectionData));
             setPendingConnectionId(connection.id);
             setConnectionDialogOpen(true);
+            return false;
           }
         } catch (error) {
           console.error('Error connecting to SSH:', error);
@@ -813,10 +855,12 @@ function AppContent() {
           setEditingConnection(toConnectionConfig(connectionData));
           setPendingConnectionId(connection.id);
           setConnectionDialogOpen(true);
+          return false;
         }
       }
     }
-  };
+    return false;
+  }, [dispatch, showUnsupportedProtocolToast, state.activeGroupId, t]);
 
   const handleTabSelect = useCallback((tabId: string) => {
     // Find which group contains this tab and activate it
@@ -828,41 +872,6 @@ function AppContent() {
       }
     }
   }, [state.groups, dispatch]);
-
-  const handleTabClose = useCallback(async (tabId: string) => {
-    // Find which group contains this tab, tear down backend resources, then remove it.
-    for (const group of Object.values(state.groups)) {
-      const tab = group.tabs.find(t => t.id === tabId);
-      if (!tab) continue;
-
-      try {
-        if (tab.tabType === 'file-browser') {
-          if (tab.protocol === 'SFTP') {
-            try { await invoke('abort_connection_transfers', { connectionId: tabId }); } catch { /* ignore */ }
-          await invoke('sftp_standalone_disconnect', { connection_id: tabId });
-          } else if (tab.protocol === 'FTP') {
-            await invoke('ftp_disconnect', { connection_id: tabId });
-          }
-        } else if (tab.tabType === 'desktop') {
-          try {
-            await invoke('desktop_disconnect', { connection_id: tabId });
-          } catch {
-            // Desktop backends may not be implemented for every protocol.
-          }
-        } else {
-          // SSH terminal (default) — also cancels any open PTY on the backend.
-          await invoke('ssh_disconnect', { connection_id: tabId });
-        }
-      } catch {
-        // Ignore disconnect errors on tab close; still remove the tab UI.
-      }
-
-      dispatch({ type: 'REMOVE_TAB', groupId: group.id, tabId });
-      break;
-    }
-  }, [state.groups, dispatch]);
-
-  handleTabCloseRef.current = handleTabClose;
 
   const closeMultipleTabs = useCallback(async (tabIds: string[]) => {
     for (const tabId of tabIds) {
@@ -917,6 +926,17 @@ function AppContent() {
       originalConnectionId,
       await decryptConnectionSecrets(connectionDataRaw),
     );
+
+    if (!isProtocolImplemented(connectionData.protocol)) {
+      if (isRdpProtocol(connectionData.protocol)) {
+        toast.error(t('app.rdpDisabled'), {
+          description: t('app.rdpDisabledDesc'),
+        });
+      } else {
+        showUnsupportedProtocolToast(connectionData.protocol);
+      }
+      return;
+    }
 
     const isSftp = tabToDuplicate.protocol === 'SFTP' || connectionData.protocol === 'SFTP';
     const isFtp = tabToDuplicate.protocol === 'FTP' || connectionData.protocol === 'FTP';
@@ -1025,7 +1045,7 @@ function AppContent() {
         description: error instanceof Error ? error.message : t('app.duplicationErrorDesc'),
       });
     }
-  }, [allTabs, state.activeGroupId, dispatch, t]);
+  }, [allTabs, state.activeGroupId, dispatch, showUnsupportedProtocolToast, t]);
 
   const handleReconnect = useCallback(async (tabId: string) => {
     const tabToReconnect = allTabs.find(tab => tab.id === tabId);
@@ -1059,6 +1079,17 @@ function AppContent() {
     }
 
     rememberSessionCredentials(originalConnectionId, connectionData);
+
+    if (!isProtocolImplemented(connectionData.protocol)) {
+      if (isRdpProtocol(connectionData.protocol)) {
+        toast.error(t('app.rdpDisabled'), {
+          description: t('app.rdpDisabledDesc'),
+        });
+      } else {
+        showUnsupportedProtocolToast(connectionData.protocol);
+      }
+      return;
+    }
 
     // Update tab status to connecting
     dispatch({ type: 'UPDATE_TAB_STATUS', tabId, status: 'connecting' });
@@ -1175,7 +1206,7 @@ function AppContent() {
         description: error instanceof Error ? error.message : t('app.reconnectionErrorDesc'),
       });
     }
-  }, [allTabs, dispatch, t]);
+  }, [allTabs, dispatch, showUnsupportedProtocolToast, t]);
 
   // Handler: open a remote file in the Log Monitor panel
   const handleOpenInLogMonitor = useCallback((filePath: string) => {
@@ -1237,7 +1268,7 @@ function AppContent() {
         resizable: true,
         decorations: true,
       });
-      win.once('tauri://error', (e) => {
+      void win.once('tauri://error', (e) => {
         toast.error(t('app.failedToOpenWindow'), { description: String(e.payload) });
       });
     }).catch((err: unknown) => {
@@ -1246,10 +1277,14 @@ function AppContent() {
   }, [activeConnection, t]);
 
   const handleConnectionDialogConnect = useCallback(async (config: ConnectionConfig) => {
-    if (isRdpProtocol(config.protocol)) {
-      toast.error(t('app.rdpDisabled'), {
-        description: t('app.rdpDisabledDesc'),
-      });
+    if (!isProtocolImplemented(config.protocol)) {
+      if (isRdpProtocol(config.protocol)) {
+        toast.error(t('app.rdpDisabled'), {
+          description: t('app.rdpDisabledDesc'),
+        });
+      } else {
+        showUnsupportedProtocolToast(config.protocol);
+      }
       return;
     }
 
@@ -1464,7 +1499,7 @@ function AppContent() {
         dispatch({ type: 'ADD_TAB', groupId: state.activeGroupId, tab: newTab });
       }
     }
-  }, [allTabs, state.groups, state.activeGroupId, dispatch, t]);
+  }, [allTabs, state.groups, state.activeGroupId, dispatch, showUnsupportedProtocolToast, t]);
 
   const handleOpenSettings = useCallback(() => {
     setSettingsModalOpen(true);
@@ -1480,7 +1515,7 @@ function AppContent() {
           break;
         case 'close_connection':
           if (activeGroup && activeGroup.activeTabId) {
-            void handleTabCloseRef.current(activeGroup.activeTabId);
+            void handleTabClose(activeGroup.activeTabId);
           }
           break;
         case 'reconnect':
@@ -1490,11 +1525,11 @@ function AppContent() {
           break;
         case 'disconnect':
           if (activeGroup && activeGroup.activeTabId) {
-            void handleTabCloseRef.current(activeGroup.activeTabId);
+            void handleTabClose(activeGroup.activeTabId);
           }
           break;
         case 'clone_tab':
-          if (activeTab) { handleDuplicateTab(activeTab.id); }
+          if (activeTab) { void handleDuplicateTab(activeTab.id); }
           break;
         case 'find':
           runActiveTerminalCommand('find');
@@ -1526,16 +1561,16 @@ function AppContent() {
           break;
       }
     });
-    return () => { unlistenPromise.then(fn => fn()); };
-  }, [activeGroup, activeTab, handleNewTab, handleOpenSettings, handleDuplicateTab, handleCloseActiveTab, runActiveTerminalCommand, dispatch]);
+    return () => { void unlistenPromise.then(fn => fn()); };
+  }, [activeGroup, activeTab, handleNewTab, handleOpenSettings, handleDuplicateTab, handleTabClose, handleReconnect, runActiveTerminalCommand, dispatch]);
 
   const handleEditConnection = useCallback(async (connection: ConnectionNode) => {
     if (connection.type !== 'connection') return;
 
     const connectionDataRaw = ConnectionStorageManager.getConnection(connection.id);
     if (!connectionDataRaw) {
-      toast.error('Connection Not Found', {
-        description: 'The connection data could not be loaded.',
+      toast.error(t('app.connectionNotFound'), {
+        description: t('app.connectionNotFoundDesc1'),
       });
       return;
     }
@@ -1571,7 +1606,7 @@ function AppContent() {
       });
       setConnectionDialogOpen(true);
     } catch (error) {
-      toast.error('Unable to decrypt connection credentials', {
+      toast.error(t('app.decryptCredentialsFailed'), {
         description: error instanceof Error ? error.message : String(error),
       });
     }
@@ -1601,6 +1636,17 @@ function AppContent() {
         (tab.connectionStatus === 'disconnected' || tab.connectionStatus === 'pending')
       );
       const sessionId = pendingTab ? pendingTab.id : `${config.id}-dup-${Date.now()}`;
+
+      if (!isProtocolImplemented(config.protocol)) {
+        if (isRdpProtocol(config.protocol)) {
+          toast.error(t('app.rdpDisabled'), {
+            description: t('app.rdpDisabledDesc'),
+          });
+        } else {
+          showUnsupportedProtocolToast(config.protocol);
+        }
+        return;
+      }
 
       const isSftp = config.protocol === 'SFTP';
       const isFtp = config.protocol === 'FTP';
@@ -1734,7 +1780,7 @@ function AppContent() {
             }
           } else {
             toast.error(t('app.connectionFailed'), {
-              description: result.error || 'Unable to connect to the server. Please check your credentials and try again.',
+              description: result.error || t('connectionDialog.toast.connectionFailedDesc'),
             });
           }
         } catch (error) {
@@ -1744,19 +1790,17 @@ function AppContent() {
         }
       }
     }
-  }, [state.groups, state.activeGroupId, allTabs, dispatch, t, pendingConnectionId]);
+  }, [state.groups, state.activeGroupId, allTabs, dispatch, showUnsupportedProtocolToast, t, pendingConnectionId]);
 
   // Get recent connections for quick connect
-  const recentConnections = useMemo(() => {
-    return ConnectionStorageManager.getRecentConnections(8).map(connection => ({
-      id: connection.id,
-      name: connection.name,
-      host: connection.host,
-      username: connection.username,
-      port: connection.port,
-      lastConnected: connection.lastConnected,
-    }));
-  }, [allTabs]); // Refresh when tabs change (new connection made)
+  const recentConnections = ConnectionStorageManager.getRecentConnections(8).map(connection => ({
+    id: connection.id,
+    name: connection.name,
+    host: connection.host,
+    username: connection.username,
+    port: connection.port,
+    lastConnected: connection.lastConnected,
+  }));
 
   // Quick connect handler
   const handleQuickConnect = useCallback(async (connectionId: string) => {
@@ -1769,100 +1813,39 @@ function AppContent() {
       return;
     }
 
-    const connectionDataRaw = ConnectionStorageManager.getConnection(connectionId);
-    if (!connectionDataRaw) {
-      toast.error('Connection Not Found', {
-        description: 'The connection could not be found. It may have been deleted.',
-      });
-      return;
-    }
+    try {
+      const connectionDataRaw = ConnectionStorageManager.getConnection(connectionId);
+      if (!connectionDataRaw) {
+        toast.error(t('app.connectionNotFound'), {
+          description: t('app.connectionNotFoundDesc2'),
+        });
+        return;
+      }
 
-    const connectionData = mergeWithSessionCredentials(
-      connectionId,
-      await decryptConnectionSecrets(connectionDataRaw),
-    );
+      const connectionData = mergeWithSessionCredentials(
+        connectionId,
+        await decryptConnectionSecrets(connectionDataRaw),
+      );
+      rememberSessionCredentials(connectionId, connectionData);
 
-    const isSftp = connectionData.protocol === 'SFTP';
-    const isFtp = connectionData.protocol === 'FTP';
-    const isFileBrowser = isSftp || isFtp;
-
-    if (!connectionHasCredentials(connectionData)) {
-      setEditingConnection({
-        id: connectionData.id,
+      const success = await handleConnectionConnect({
+        id: connectionId,
         name: connectionData.name,
-        protocol: connectionData.protocol as ConnectionConfig['protocol'],
-        host: connectionData.host,
-        port: connectionData.port,
-        username: connectionData.username,
-        authMethod: connectionData.authMethod || 'password',
+        type: 'connection',
       });
-      setConnectionDialogOpen(true);
-      return;
-    }
 
-    rememberSessionCredentials(connectionId, connectionData);
-
-    if (isFileBrowser) {
-      // Route through handleConnectionDialogConnect which handles SFTP/FTP
-      const config: ConnectionConfig = toConnectionConfig(connectionData);
-      await handleConnectionDialogConnect(config);
-      toast.success(t('app.quickConnected'), {
-        description: t('app.quickConnectedDesc', { name: connectionData.name }),
-      });
-    } else {
-      // SSH quick connect (existing behavior)
-      try {
-        const result = await invoke<{ success: boolean; error?: string }>(
-          'ssh_connect',
-          {
-            request: {
-              connection_id: connectionData.id,
-              host: connectionData.host,
-              port: connectionData.port || 22,
-              username: connectionData.username,
-              auth_method: connectionData.authMethod || 'password',
-              password: connectionData.password || '',
-              key_path: connectionData.privateKeyPath || null,
-              passphrase: connectionData.passphrase || null,
-                    ...buildTransportInvokeFields(),
-                    key_data: connectionData.privateKeyData || null,
-                    proxy_type: connectionData.proxyType && connectionData.proxyType !== 'none' ? connectionData.proxyType : null,
-                    proxy_host: connectionData.proxyHost || null,
-                    proxy_port: connectionData.proxyPort || null,
-                    proxy_username: connectionData.proxyUsername || null,
-                    proxy_password: connectionData.proxyPassword || null,
-                    startup_command: connectionData.startupCommand || null,
-            }
-          }
-        );
-
-        if (result.success) {
-          ConnectionStorageManager.updateLastConnected(connectionData.id);
-
-          const config: ConnectionConfig = toConnectionConfig(connectionData);
-
-          handleConnectionDialogConnect(config);
-
-          toast.success(t('app.quickConnected'), {
-            description: t('app.quickConnectedDesc', { name: connectionData.name }),
-          });
-        } else {
-          console.error('Quick connect failed:', result.error);
-          toast.error(t('app.connectionFailed'), {
-            description: result.error || 'Unable to connect. Please try again.',
-          });
-          setEditingConnection(toConnectionConfig(connectionData));
-          setPendingConnectionId(connectionData.id);
-          setConnectionDialogOpen(true);
-        }
-      } catch (error) {
-        console.error('Quick connect error:', error);
-        toast.error(t('app.connectionError'), {
-          description: error instanceof Error ? error.message : t('app.connectionErrorDesc'),
+      if (success) {
+        toast.success(t('app.quickConnected'), {
+          description: t('app.quickConnectedDesc', { name: connectionData.name }),
         });
       }
+    } catch (error) {
+      console.error('Quick connect error:', error);
+      toast.error(t('app.connectionError'), {
+        description: error instanceof Error ? error.message : t('app.connectionErrorDesc'),
+      });
     }
-  }, [allTabs, handleTabSelect, handleConnectionDialogConnect, t]);
+  }, [allTabs, handleTabSelect, handleConnectionConnect, t]);
 
   // Derive active connection info for StatusBar (compatible format)
   const statusBarConnection = activeConnection ? {
@@ -1989,7 +1972,7 @@ function AppContent() {
         onNewTab={handleNewTab}
         onCloseConnection={() => {
           if (activeGroup && activeGroup.activeTabId) {
-            void handleTabCloseRef.current(activeGroup.activeTabId);
+            void handleTabClose(activeGroup.activeTabId);
           }
         }}
         onNextTab={() => {

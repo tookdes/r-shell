@@ -94,7 +94,11 @@
     "unknownHost": "unknown host",
     "restoreCancelled": "Session restore cancelled",
     "rdpDisabled": "RDP is disabled",
-    "rdpDisabledDesc": "Remote Desktop (RDP) is not available in this build. Use SSH, SFTP, FTP, or VNC instead."
+    "rdpDisabledDesc": "Remote Desktop (RDP) is not available in this build. Use SSH, SFTP, or FTP instead.",
+    "protocolUnavailable": "{{protocol}} is not available",
+    "protocolUnavailableDesc": "This build currently supports SSH, SFTP, and FTP. Edit the connection and choose one of those protocols.",
+    "unknownProtocol": "Unknown protocol",
+    "decryptCredentialsFailed": "Unable to decrypt connection credentials"
   },
   "connectionDialog": {
     "title": {
@@ -613,7 +617,8 @@
       "queuedUploadToPath": "Queued {{count}} file(s) for upload to {{path}}",
       "enterFolderName": "Enter folder name:",
       "enterFileName": "Enter file name:",
-      "fileInfo": "File: {{name}}\nSize: {{size}}\nModified: {{modified}}\nPermissions: {{permissions}}"
+      "fileInfo": "File: {{name}}\nSize: {{size}}\nModified: {{modified}}\nPermissions: {{permissions}}",
+      "copyPathFailed": "Failed to copy path"
     },
     "toolbar": {
       "back": "Back",
@@ -950,7 +955,8 @@
       "directoryCreated": "Directory created",
       "createDirectoryFailed": "Create directory failed",
       "pathCopied": "Path copied",
-      "loadFailed": "Failed to load directory"
+      "loadFailed": "Failed to load directory",
+      "copyPathFailed": "Failed to copy path"
     },
     "prompt": {
       "rename": "New name:",

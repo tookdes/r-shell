@@ -94,7 +94,11 @@
     "unknownHost": "未知主机",
     "restoreCancelled": "已取消会话恢复",
     "rdpDisabled": "RDP 已禁用",
-    "rdpDisabledDesc": "此版本不提供远程桌面（RDP）。请使用 SSH、SFTP、FTP 或 VNC。"
+    "rdpDisabledDesc": "此版本不提供远程桌面（RDP）。请使用 SSH、SFTP 或 FTP。",
+    "protocolUnavailable": "{{protocol}} 不可用",
+    "protocolUnavailableDesc": "此版本目前只支持 SSH、SFTP 和 FTP。请编辑连接并选择其中一种协议。",
+    "unknownProtocol": "未知协议",
+    "decryptCredentialsFailed": "无法解密连接凭据"
   },
   "connectionDialog": {
     "title": {
@@ -613,7 +617,8 @@
       "queuedUploadToPath": "已排队 {{count}} 个文件等待上传到 {{path}}",
       "enterFolderName": "请输入文件夹名称：",
       "enterFileName": "请输入文件名称：",
-      "fileInfo": "文件：{{name}}\n大小：{{size}}\n修改时间：{{modified}}\n权限：{{permissions}}"
+      "fileInfo": "文件：{{name}}\n大小：{{size}}\n修改时间：{{modified}}\n权限：{{permissions}}",
+      "copyPathFailed": "复制路径失败"
     },
     "toolbar": {
       "back": "后退",
@@ -950,7 +955,8 @@
       "directoryCreated": "目录已创建",
       "createDirectoryFailed": "创建目录失败",
       "pathCopied": "路径已复制",
-      "loadFailed": "加载目录失败"
+      "loadFailed": "加载目录失败",
+      "copyPathFailed": "复制路径失败"
     },
     "prompt": {
       "rename": "新名称：",

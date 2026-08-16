@@ -65,8 +65,11 @@ export function UpdateChecker({ checkSignal }: UpdateCheckerProps) {
   const busyRef = useRef(false);
 
   const busy = status === 'downloading' || status === 'installing' || status === 'checking';
-  busyRef.current = busy;
   const readyToInstall = status === 'ready' || status === 'installing';
+
+  useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
 
   const resetState = useCallback(() => {
     setStatus('idle');
@@ -81,6 +84,7 @@ export function UpdateChecker({ checkSignal }: UpdateCheckerProps) {
     if (busyRef.current) {
       return;
     }
+    busyRef.current = true;
 
     setStatus('checking');
     setError(null);
@@ -138,14 +142,17 @@ export function UpdateChecker({ checkSignal }: UpdateCheckerProps) {
       if (manual) {
         toast.error(t('updateChecker.checkFailed'), { description: message });
       }
+    } finally {
+      busyRef.current = false;
     }
   }, [t]);
 
   const handleDownload = useCallback(async () => {
-    if (!updateInfo) {
+    if (!updateInfo || busyRef.current) {
       return;
     }
 
+    busyRef.current = true;
     setStatus('downloading');
     setProgress(0);
     setError(null);
@@ -179,14 +186,17 @@ export function UpdateChecker({ checkSignal }: UpdateCheckerProps) {
       setStatus('error');
       setError(message);
       toast.error(t('updateChecker.downloadFailed'), { description: message });
+    } finally {
+      busyRef.current = false;
     }
   }, [updateInfo, t]);
 
   const handleInstall = useCallback(async () => {
-    if (!updateInfo) {
+    if (!updateInfo || busyRef.current) {
       return;
     }
 
+    busyRef.current = true;
     setStatus('installing');
 
     try {
@@ -200,13 +210,14 @@ export function UpdateChecker({ checkSignal }: UpdateCheckerProps) {
       const message = caught instanceof Error ? caught.message : t('updateChecker.installFailedFallback');
       setStatus('error');
       setError(message);
+      busyRef.current = false;
       toast.error(t('updateChecker.installFailed'), { description: message });
     }
   }, [updateInfo, t]);
 
   useEffect(() => {
     if (isAutoCheckEnabled()) {
-      checkForUpdates(false);
+      void checkForUpdates(false);
     }
   }, [checkForUpdates]);
 
@@ -214,7 +225,7 @@ export function UpdateChecker({ checkSignal }: UpdateCheckerProps) {
     if (typeof checkSignal === 'number') {
       if (lastSignalRef.current !== checkSignal) {
         lastSignalRef.current = checkSignal;
-        checkForUpdates(true);
+        void checkForUpdates(true);
       }
     }
   }, [checkSignal, checkForUpdates]);
