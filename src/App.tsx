@@ -1315,8 +1315,21 @@ function AppContent() {
         }
       }
 
-      // For SFTP/FTP reconnect flow
+      // For SFTP/FTP reconnect flow — tear down the old session first so the
+      // backend does not end up with a stale duplicate connection (same as
+      // handleReconnect does for manual reconnects).
       if (isFileBrowser) {
+        try {
+          if (isSftp) {
+            try { await invoke('abort_connection_transfers', { connectionId: tabId }); } catch { /* ignore */ }
+            await invoke('sftp_standalone_disconnect', { connection_id: tabId });
+          } else {
+            await invoke('ftp_disconnect', { connection_id: tabId });
+          }
+        } catch {
+          // Ignore disconnect errors; the new connect below is authoritative.
+        }
+
         try {
           if (isSftp) {
             await invoke('sftp_connect', {
@@ -1724,7 +1737,15 @@ function AppContent() {
                 auth_method: config.authMethod || 'password',
                 password: config.password || '',
                 key_path: config.privateKeyPath || null,
+                key_data: config.privateKeyData || null,
                 passphrase: config.passphrase || null,
+                ...buildTransportInvokeFields(),
+                proxy_type: config.proxyType && config.proxyType !== 'none' ? config.proxyType : null,
+                proxy_host: config.proxyHost || null,
+                proxy_port: config.proxyPort || null,
+                proxy_username: config.proxyUsername || null,
+                proxy_password: config.proxyPassword || null,
+                startup_command: config.startupCommand || null,
               }
             });
           } else {

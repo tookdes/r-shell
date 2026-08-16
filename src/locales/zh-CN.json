@@ -428,6 +428,7 @@
     "newConnectionDesc": "通过 SSH、SFTP、FTP 或 FTPS 连接",
     "connectionManager": "连接管理器",
     "connectionManagerDesc": "浏览和管理已保存的连接",
+    "leftSidebarHint": "左侧边栏 {{shortcut}}",
     "preferences": "偏好设置",
     "preferencesDesc": "终端主题、字体和布局",
     "orPickFromSidebar": "或从左侧边栏选择已保存的服务器",

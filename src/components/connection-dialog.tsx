@@ -616,6 +616,13 @@ const handleCancelConnectionAttempt = async () => {
   const handleSave = async () => {
     if (!editingConnection?.id) return;
 
+    const secretsForStorage = await encryptConnectionSecrets({
+      password: config.password,
+      passphrase: config.passphrase,
+      privateKeyData: config.privateKeyData,
+      proxyPassword: config.proxyPassword,
+    });
+
     // Save updated connection to storage
     ConnectionStorageManager.updateConnection(editingConnection.id, {
       name: config.name,
@@ -624,15 +631,16 @@ const handleCancelConnectionAttempt = async () => {
       username: config.username,
       protocol: config.protocol,
       authMethod: config.authMethod,
-      password: config.password,
+      password: secretsForStorage.password,
       privateKeyPath: config.privateKeyPath,
-      passphrase: config.passphrase,
+      privateKeyData: secretsForStorage.privateKeyData,
+      passphrase: secretsForStorage.passphrase,
       ftpsEnabled: config.ftpsEnabled,
       proxyType: config.proxyType,
       proxyHost: config.proxyHost,
       proxyPort: config.proxyPort,
       proxyUsername: config.proxyUsername,
-      proxyPassword: config.proxyPassword,
+      proxyPassword: secretsForStorage.proxyPassword,
       compression: config.compression,
       keepAlive: config.keepAlive,
       keepAliveInterval: config.keepAliveInterval,
@@ -672,7 +680,7 @@ const handleCancelConnectionAttempt = async () => {
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="top-[50%] left-[50%] -translate-x-1/2 -translate-y-1/2 w-[900px] h-[680px] max-w-[90vw] max-h-[90vh] flex flex-col p-0 gap-0">
+      <DialogContent className="!inset-0 !m-auto w-[900px] h-[680px] max-w-[90vw] max-h-[90vh] flex flex-col p-0 gap-0">
         <DialogHeader className="px-6 pt-6 pb-4 border-b border-border">
           <DialogTitle className="flex items-center gap-2">
             <div className="p-2 bg-primary/10 rounded-lg">

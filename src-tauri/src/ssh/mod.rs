@@ -517,24 +517,6 @@ impl SshClient {
             // Create a channel for resize requests
             let (resize_tx, mut resize_rx) = mpsc::channel::<(u32, u32)>(16);
 
-            // Optional startup command (sent once shell is ready).
-            if let Some(cmd) = self.startup_command.clone() {
-                let cmd = cmd.trim().to_string();
-                if !cmd.is_empty() {
-                    let startup_tx = input_tx.clone();
-                    tokio::spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-                        let mut payload = cmd.replace("\r\n", "\n").replace('\r', "\n");
-                        if !payload.ends_with('\n') {
-                            payload.push('\n');
-                        }
-                        // SSH PTY expects CR as line terminator for most shells.
-                        let bytes = payload.replace('\n', "\r").into_bytes();
-                        let _ = startup_tx.send(bytes).await;
-                    });
-                }
-            }
-
             // Spawn task to handle input (frontend → SSH)
             // This is similar to ttyd's pty_write and INPUT command handling
             // Key: immediate write + flush for responsiveness
