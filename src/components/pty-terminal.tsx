@@ -405,10 +405,7 @@ export function PtyTerminal({
     term.writeln('\x1b[1;32m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m');
     term.writeln(`\x1b[1;36m  ${connectionName}\x1b[0m`);
     term.writeln(`\x1b[90m  ${username}@${host}\x1b[0m`);
-    term.writeln(`\x1b[90m  Renderer: ${rendererRef.current.toUpperCase()}\x1b[0m`);
     term.writeln('\x1b[1;32m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m');
-    term.write('\r\n');
-    term.writeln('\x1b[33m🚀 Starting interactive shell (WebSocket + PTY mode)...\x1b[0m');
     term.write('\r\n');
 
     let isRunning = true;

@@ -428,6 +428,7 @@
     "newConnectionDesc": "Connect via SSH, SFTP, FTP, or FTPS",
     "connectionManager": "Connection Manager",
     "connectionManagerDesc": "Browse & organize saved connections",
+    "leftSidebarHint": "Left sidebar {{shortcut}}",
     "preferences": "Preferences",
     "preferencesDesc": "Terminal themes, fonts & layout",
     "orPickFromSidebar": "or pick a saved server from the left sidebar",

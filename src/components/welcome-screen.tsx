@@ -1,5 +1,6 @@
 import React from 'react';
 import { useTranslation, Trans } from 'react-i18next';
+import { formatKeyboardShortcut, DEFAULT_APP_KEYBOARD_SHORTCUTS, DEFAULT_LAYOUT_SHORTCUTS } from '@/lib/keyboard-shortcuts';
 import { Button } from './ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { 
@@ -31,6 +32,10 @@ interface WelcomeScreenProps {
 
 export function WelcomeScreen({ onNewConnection, onOpenSettings }: WelcomeScreenProps) {
   const { t } = useTranslation();
+  const isMac = navigator.platform.toUpperCase().includes('MAC');
+  const newSessionShortcut = formatKeyboardShortcut(DEFAULT_APP_KEYBOARD_SHORTCUTS.newSession, isMac);
+  const leftSidebarShortcut = formatKeyboardShortcut(DEFAULT_LAYOUT_SHORTCUTS.toggleLeftSidebar, isMac);
+  const preferencesShortcut = isMac ? '⌘,' : 'Ctrl+,';
   const quickActions = [
     {
       icon: Plus,
@@ -38,7 +43,7 @@ export function WelcomeScreen({ onNewConnection, onOpenSettings }: WelcomeScreen
       description: t('welcome.newConnectionDesc'),
       action: onNewConnection,
       variant: 'default' as const,
-      shortcut: '⌘N'
+      shortcut: newSessionShortcut
     },
     {
       icon: FolderTree,
@@ -46,7 +51,7 @@ export function WelcomeScreen({ onNewConnection, onOpenSettings }: WelcomeScreen
       description: t('welcome.connectionManagerDesc'),
       action: () => {},
       variant: 'outline' as const,
-      highlight: 'Left sidebar ⌘B'
+      highlight: t('welcome.leftSidebarHint', { shortcut: leftSidebarShortcut })
     },
     {
       icon: Settings,
@@ -54,7 +59,7 @@ export function WelcomeScreen({ onNewConnection, onOpenSettings }: WelcomeScreen
       description: t('welcome.preferencesDesc'),
       action: onOpenSettings,
       variant: 'outline' as const,
-      shortcut: '⌘,'
+      shortcut: preferencesShortcut
     }
   ];
 
