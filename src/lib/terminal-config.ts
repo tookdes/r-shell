@@ -340,7 +340,9 @@ export const defaultTerminalOptions: ITerminalOptions = {
   letterSpacing: 0,
   theme: defaultTerminalTheme,
   allowProposedApi: true,
-  convertEol: true,
+  // PTY streams are terminal data, not editor input. Full-screen TUIs emit
+  // bare LF intentionally; converting it to CRLF corrupts their layouts.
+  convertEol: false,
   scrollback: DEFAULT_TERMINAL_SCROLLBACK,
   tabStopWidth: 8,
   allowTransparency: false,

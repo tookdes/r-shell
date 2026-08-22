@@ -35,6 +35,30 @@ describe('terminal scrollback configuration', () => {
     term.dispose();
   });
 
+  it('leaves PTY line endings to the remote terminal driver', async () => {
+    // Full-screen TUIs (Charm Crush, Bubble Tea, vim, htop) can use a bare LF
+    // to move down while retaining the cursor column. Rewriting it as CRLF
+    // snaps the cursor to column zero and corrupts overlays/dialog layout.
+    expect(defaultTerminalOptions.convertEol).toBe(false);
+    expect(getTerminalOptions(loadAppearanceSettings()).convertEol).toBe(false);
+
+    const term = new Terminal({
+      ...defaultTerminalOptions,
+      cols: 20,
+      rows: 5,
+    });
+    const write = (data: string) =>
+      new Promise<void>((resolve) => term.write(data, resolve));
+    term.write('\x1b[2;10H');
+    await write('');
+    await write('\n');
+
+    // A bare LF must move down without changing the column.
+    expect(term.buffer.active.cursorY).toBe(2);
+    expect(term.buffer.active.cursorX).toBe(9);
+    term.dispose();
+  });
+
   it('migrates the regressed 500-line saved scrollback value back to the default', () => {
     localStorage.setItem(
       'terminalAppearance',

@@ -413,6 +413,12 @@ export function ConnectionDialog({
     // Save connection config FIRST (consistent with SFTP/FTP/Desktop),
     // so the config is preserved even if the remote server is temporarily unreachable.
     if (editingConnection?.id) {
+      const secretsForStorage = await encryptConnectionSecrets({
+        password: config.password,
+        passphrase: config.passphrase,
+        privateKeyData: config.privateKeyData,
+        proxyPassword: config.proxyPassword,
+      });
       ConnectionStorageManager.updateConnection(editingConnection.id, {
         name: config.name,
         host: config.host,
@@ -420,14 +426,15 @@ export function ConnectionDialog({
         username: config.username,
         protocol: config.protocol,
         authMethod: config.authMethod,
-        password: config.password,
+        password: secretsForStorage.password,
         privateKeyPath: config.privateKeyPath,
-        passphrase: config.passphrase,
+        privateKeyData: secretsForStorage.privateKeyData,
+        passphrase: secretsForStorage.passphrase,
         proxyType: config.proxyType,
         proxyHost: config.proxyHost,
         proxyPort: config.proxyPort,
         proxyUsername: config.proxyUsername,
-        proxyPassword: config.proxyPassword,
+        proxyPassword: secretsForStorage.proxyPassword,
         compression: config.compression,
         keepAlive: config.keepAlive,
         keepAliveInterval: config.keepAliveInterval,
@@ -616,12 +623,12 @@ const handleCancelConnectionAttempt = async () => {
   const handleSave = async () => {
     if (!editingConnection?.id) return;
 
-    const secretsForStorage = await encryptConnectionSecrets({
+    const secretsForStorage = {
       password: config.password,
       passphrase: config.passphrase,
       privateKeyData: config.privateKeyData,
       proxyPassword: config.proxyPassword,
-    });
+    };
 
     // Save updated connection to storage
     ConnectionStorageManager.updateConnection(editingConnection.id, {
@@ -1251,7 +1258,7 @@ const handleCancelConnectionAttempt = async () => {
                 {isConnecting ? (isCancelling ? t('connectionDialog.button.cancelling') : t('connectionDialog.button.stop')) : t('connectionDialog.button.cancel')}
               </Button>
               {editingConnection ? (
-                <Button onClick={handleSave} className="min-w-[140px]">
+                <Button onClick={() => { void handleSave(); }} className="min-w-[140px]">
                   {t('connectionDialog.button.save')}
                 </Button>
               ) : (

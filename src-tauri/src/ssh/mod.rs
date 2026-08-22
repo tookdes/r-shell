@@ -22,7 +22,9 @@ pub static PREFERRED_HOST_KEY_ALGOS: &[russh_keys::key::Name] = &[
     russh_keys::key::RSA_SHA2_512,
 ];
 
+const LOGIN_SHELL_PROBE: &str = r#"/bin/sh -c 'printf "__RSHELL_LOGIN_SHELL__%s" "${SHELL-}"'"#;
 const BASH_VERSION_PROBE: &str = r#"printf '__RSHELL_BASH_VERSION__%s' "${BASH_VERSION-}""#;
+const LOGIN_SHELL_MARKER: &str = "__RSHELL_LOGIN_SHELL__";
 const BASH_VERSION_MARKER: &str = "__RSHELL_BASH_VERSION__";
 const BASH_SHELL_INTEGRATION_PREFIX: &str = r#" stty echo; __rshell_report_cwd(){ local p=${PWD//%/%25}; p=${p// /%20}; p=${p//#/%23}; p=${p//\?/%3F}; printf '\033]7;file://%s%s\033\\' "${HOSTNAME:-localhost}" "$p"; }; "#;
 const BASH_SHELL_INTEGRATION_SUFFIX: &str = "printf '\\r\\033[2K'\n";
@@ -39,6 +41,44 @@ pub(crate) fn bash_version_from_probe(output: &str) -> Option<BashVersion> {
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next()?.parse().ok()?;
     Some(BashVersion { major, minor })
+}
+
+pub(crate) fn login_shell_from_probe(output: &str) -> Option<&str> {
+    let shell = output
+        .rsplit_once(LOGIN_SHELL_MARKER)?
+        .1
+        .lines()
+        .next()?
+        .trim();
+    if !is_safe_unix_login_shell(shell) {
+        return None;
+    }
+    Some(shell)
+}
+
+fn is_safe_unix_login_shell(shell: &str) -> bool {
+    if shell.len() < 2 || !shell.starts_with('/') {
+        return false;
+    }
+
+    // The value is interpolated into a POSIX /bin/sh command without further
+    // quoting. Real login-shell executables use a small set of path characters,
+    // so reject anything that could alter command syntax instead.
+    shell.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || byte == b'/' || byte == b'.' || byte == b'_' || byte == b'-'
+    })
+}
+
+pub(crate) fn truecolor_login_shell_command(login_shell: &str) -> Option<Vec<u8>> {
+    if !is_safe_unix_login_shell(login_shell) {
+        return None;
+    }
+
+    format!(
+        "/bin/sh -c 'exec env TERM=xterm-256color COLORTERM=truecolor RUNEWIDTH_EASTASIAN=0 {login_shell} -l'"
+    )
+    .into_bytes()
+    .into()
 }
 
 pub(crate) fn bash_shell_integration_command(version: BashVersion) -> Vec<u8> {
@@ -323,6 +363,20 @@ impl SshClient {
             .unwrap_or(30);
         let connection_timeout = Duration::from_secs(timeout_secs);
 
+        // Load key material before opening the network session so bad local
+        // credentials fail immediately instead of surfacing as a host timeout.
+        let preloaded_key = match &config.auth_method {
+            AuthMethod::PublicKey {
+                key_path,
+                key_data,
+                passphrase,
+            } => Some(load_private_key(
+                key_path.as_deref(),
+                key_data.as_deref(),
+                passphrase.as_deref(),
+            )?),
+            AuthMethod::Password { .. } => None,
+        };
         let handler = Client::new(config.host.clone(), config.port, config.verify_host_key);
         let proxy = config.proxy.clone();
         let host = config.host.clone();
@@ -358,15 +412,11 @@ impl SshClient {
                 .await
                 .map_err(|e| anyhow::anyhow!("Password authentication failed: {}", e))?,
             AuthMethod::PublicKey {
-                key_path,
-                key_data,
-                passphrase,
+                key_path: _key_path,
+                key_data: _key_data,
+                passphrase: _passphrase,
             } => {
-                let key = load_private_key(
-                    key_path.as_deref(),
-                    key_data.as_deref(),
-                    passphrase.as_deref(),
-                )?;
+                let key = preloaded_key.expect("public-key material is loaded before connecting");
                 ssh_session
                     .authenticate_publickey(&config.username, Arc::new(key))
                     .await
@@ -466,14 +516,30 @@ impl SshClient {
     /// This enables interactive commands like vim, less, more, top, etc.
     pub async fn create_pty_session(&self, cols: u32, rows: u32) -> Result<PtySession> {
         if let Some(session) = &self.session {
-            let bash_version = tokio::time::timeout(
-                Duration::from_secs(2),
-                self.execute_command(BASH_VERSION_PROBE),
-            )
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .and_then(|output| bash_version_from_probe(&output));
+            // Run the probes on separate exec channels: `BASH_VERSION` is an
+            // unexported shell variable, while the POSIX login-shell probe must
+            // also work when the account's remote shell is fish/csh/etc.
+            let (login_probe_result, bash_probe_result) = tokio::join!(
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    self.execute_command(LOGIN_SHELL_PROBE)
+                ),
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    self.execute_command(BASH_VERSION_PROBE)
+                )
+            );
+            let login_shell = login_probe_result
+                .ok()
+                .and_then(Result::ok)
+                .as_deref()
+                .and_then(login_shell_from_probe)
+                .map(str::to_owned);
+            let bash_version = bash_probe_result
+                .ok()
+                .and_then(Result::ok)
+                .as_deref()
+                .and_then(bash_version_from_probe);
 
             // Open a new SSH channel
             let mut channel = session.channel_open_session().await?;
@@ -498,8 +564,22 @@ impl SshClient {
                 )
                 .await?;
 
-            // Start interactive shell
-            channel.request_shell(true).await?;
+            // Prefer launching the login shell through `env`, so modern TUIs see
+            // TrueColor before their startup color-profile detection runs. SSH
+            // `env` requests are often filtered by AcceptEnv, while writing an
+            // export into the PTY can race with the prompt and pollute input.
+            if let Some(command) = login_shell
+                .as_deref()
+                .and_then(truecolor_login_shell_command)
+            {
+                channel.exec(true, String::from_utf8(command)?).await?;
+            } else {
+                // Best effort only: some servers may accept it even though this
+                // is not guaranteed without the wrapper above.
+                let _ = channel.set_env(false, "COLORTERM", "truecolor").await;
+                let _ = channel.set_env(false, "RUNEWIDTH_EASTASIAN", "0").await;
+                channel.request_shell(true).await?;
+            }
 
             // Create channels for bidirectional communication (like ttyd's pty_buf)
             // Increased capacity for better buffering during fast input

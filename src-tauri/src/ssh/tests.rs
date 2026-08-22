@@ -182,8 +182,8 @@ mod tests {
 mod shell_integration_tests {
     use crate::sftp_client::list_sftp_dir;
     use crate::ssh::{
-        bash_shell_integration_command, bash_version_from_probe, AuthMethod, BashVersion,
-        PtySession, SshClient, SshConfig,
+        bash_shell_integration_command, bash_version_from_probe, login_shell_from_probe,
+        truecolor_login_shell_command, AuthMethod, BashVersion, PtySession, SshClient, SshConfig,
     };
     use std::time::Duration;
     use tokio::time::{timeout, Instant};
@@ -213,6 +213,68 @@ mod shell_integration_tests {
             "5.2.37",
         ] {
             assert_eq!(bash_version_from_probe(output), None, "output: {output:?}");
+        }
+    }
+
+    #[test]
+    fn parses_separate_login_shell_and_bash_version_probes() {
+        let login_output = "profile output\n__RSHELL_LOGIN_SHELL__/opt/homebrew/bin/fish";
+        let bash_output = "__RSHELL_BASH_VERSION__5.2.37(1)-release";
+
+        assert_eq!(
+            login_shell_from_probe(login_output),
+            Some("/opt/homebrew/bin/fish")
+        );
+        assert_eq!(
+            bash_version_from_probe(bash_output),
+            Some(BashVersion { major: 5, minor: 2 })
+        );
+    }
+
+    #[test]
+    fn accepts_common_absolute_login_shells() {
+        for shell in ["/bin/bash", "/usr/bin/zsh", "/opt/homebrew/bin/fish"] {
+            let output = format!("__RSHELL_LOGIN_SHELL__{shell}");
+            assert_eq!(login_shell_from_probe(&output), Some(shell));
+        }
+    }
+
+    #[test]
+    fn rejects_missing_relative_or_unsafe_login_shells() {
+        for output in [
+            "",
+            "__RSHELL_LOGIN_SHELL__",
+            "__RSHELL_LOGIN_SHELL__bash",
+            "__RSHELL_LOGIN_SHELL__/bin/bash -c evil",
+            "__RSHELL_LOGIN_SHELL__/tmp/evil;id",
+            "__RSHELL_LOGIN_SHELL__/'/bin/bash'",
+            "__RSHELL_LOGIN_SHELL__/bin/ba\tsh",
+        ] {
+            assert_eq!(login_shell_from_probe(output), None, "output: {output:?}");
+        }
+    }
+
+    #[test]
+    fn truecolor_wrapper_sets_environment_before_login_shell() {
+        let command = String::from_utf8(
+            truecolor_login_shell_command("/bin/zsh").expect("valid shell should produce command"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            command,
+            "/bin/sh -c 'exec env TERM=xterm-256color COLORTERM=truecolor RUNEWIDTH_EASTASIAN=0 /bin/zsh -l'"
+        );
+    }
+
+    #[test]
+    fn truecolor_wrapper_rejects_unsafe_shells() {
+        for shell in ["bash", "/bin/bash -c evil", "/tmp/evil;id", "'/bin/bash'"] {
+            assert_eq!(
+                truecolor_login_shell_command(shell),
+                None,
+                "shell: {shell:?}"
+            );
         }
     }
 

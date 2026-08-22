@@ -2,6 +2,7 @@ import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { PtyTerminal } from '../components/pty-terminal';
+import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { APP_SETTINGS_STORAGE_KEY } from '../lib/keyboard-shortcuts';
 import { MenuBar } from '../components/menu-bar';
 import { dispatchTerminalCommand } from '../lib/terminal-commands';
@@ -25,6 +26,7 @@ const mocks = vi.hoisted(() => {
         getLine: vi.fn(),
       },
     };
+    unicode = { activeVersion: '6', register: vi.fn() };
     oscHandlers = new Map<number, (data: string) => boolean | Promise<boolean>>();
     parser = {
       registerOscHandler: vi.fn((identifier: number, handler: (data: string) => boolean | Promise<boolean>) => {
@@ -274,6 +276,16 @@ describe('PtyTerminal activation', () => {
     renderTerminal(false);
 
     expect(mocks.terminals[0].focus).not.toHaveBeenCalled();
+  });
+
+  it('uses Unicode 11 cell widths for PTY output', () => {
+    renderTerminal(false);
+
+    const terminal = mocks.terminals[0];
+    expect(terminal.unicode.activeVersion).toBe('11');
+    expect(
+      terminal.loadAddon.mock.calls.some(([addon]) => addon instanceof Unicode11Addon),
+    ).toBe(true);
   });
 
   it('reports OSC 7 working-directory changes for its own connection', () => {
