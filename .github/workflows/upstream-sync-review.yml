@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - review/upstream-sync-2026-08-22
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -14,7 +17,7 @@ concurrency:
 
 jobs:
   review-and-fix:
-    if: ${{ !contains(github.event.head_commit.message, '[upstream-review-bot]') }}
+    if: ${{ github.event_name == 'pull_request' || !contains(github.event.head_commit.message, '[upstream-review-bot]') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -29,12 +32,6 @@ jobs:
           p = Path('src/components/connection-dialog.tsx')
           s = p.read_text()
           old = '''    const secretsForStorage = {
-                password: config.password,
-                passphrase: config.passphrase,
-                privateKeyData: config.privateKeyData,
-                proxyPassword: config.proxyPassword,
-              };'''
-          old2 = '''    const secretsForStorage = {
       password: config.password,
       passphrase: config.passphrase,
       privateKeyData: config.privateKeyData,
@@ -46,20 +43,16 @@ jobs:
       privateKeyData: config.privateKeyData,
       proxyPassword: config.proxyPassword,
     });'''
-          if old2 in s:
-              s = s.replace(old2, new, 1)
-          elif old in s:
-              s = s.replace(old, new, 1)
-          else:
+          if old not in s:
               raise SystemExit('plaintext handleSave pattern not found')
-          p.write_text(s)
+          p.write_text(s.replace(old, new, 1))
           PY
 
       - name: Probe upstream cherry-picks
         run: |
-          git remote add upstream https://github.com/GOODBOY008/r-shell.git
+          git remote add upstream https://github.com/GOODBOY008/r-shell.git || true
           git fetch upstream main
-          : > upstream-cherry-pick-report.txt
+          : > /tmp/upstream-cherry-pick-report.txt
           for sha in \
             397e22253b0d778bc216ad97ac294776fffd2e47 \
             43a78205c9d6a3f69bb1137046972a55b4c8acf7 \
@@ -68,13 +61,12 @@ jobs:
             adb0d752fac2e1ba41aea070a06e43ab2f24475b
           do
             git reset --hard HEAD
-            git clean -fd
             if git cherry-pick --no-commit "$sha" >/tmp/cherry.out 2>&1; then
-              echo "$sha CLEAN" | tee -a upstream-cherry-pick-report.txt
+              echo "$sha CLEAN" >> /tmp/upstream-cherry-pick-report.txt
               git reset --hard HEAD
             else
-              echo "$sha CONFLICT" | tee -a upstream-cherry-pick-report.txt
-              git diff --name-only --diff-filter=U | sed 's/^/  /' | tee -a upstream-cherry-pick-report.txt
+              echo "$sha CONFLICT" >> /tmp/upstream-cherry-pick-report.txt
+              git diff --name-only --diff-filter=U | sed 's/^/  /' >> /tmp/upstream-cherry-pick-report.txt
               git cherry-pick --abort >/dev/null 2>&1 || true
               git reset --hard HEAD
             fi
@@ -102,6 +94,7 @@ jobs:
               raise SystemExit('plaintext handleSave pattern not found after probe reset')
           p.write_text(s.replace(old, new, 1))
           PY
+          cp /tmp/upstream-cherry-pick-report.txt upstream-cherry-pick-report.txt
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add src/components/connection-dialog.tsx upstream-cherry-pick-report.txt
