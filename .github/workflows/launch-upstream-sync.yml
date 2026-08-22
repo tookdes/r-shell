@@ -1,21 +1,28 @@
 name: Launch upstream sync review
 
 on:
-  push:
-    branches: [main]
+  pull_request_target:
+    types: [edited, opened, reopened, synchronize]
 
 permissions:
   contents: write
 
 jobs:
   sync:
-    if: ${{ contains(github.event.head_commit.message, '[launch-upstream-sync]') }}
+    if: ${{ github.event.pull_request.number == 2 && github.event.pull_request.head.ref == 'review/upstream-sync-2026-08-22' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
           ref: review/upstream-sync-2026-08-22
           fetch-depth: 0
+
+      - name: Configure git and fetch upstream
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git remote add upstream https://github.com/GOODBOY008/r-shell.git || true
+          git fetch upstream main
 
       - name: Fix reviewed credential regression
         run: |
@@ -35,24 +42,26 @@ jobs:
       privateKeyData: config.privateKeyData,
       proxyPassword: config.proxyPassword,
     });'''
-          if old not in s:
-              raise SystemExit('plaintext handleSave pattern not found')
-          p.write_text(s.replace(old, new, 1))
+          if old in s:
+              p.write_text(s.replace(old, new, 1))
+          elif 'const secretsForStorage = await encryptConnectionSecrets({' not in s:
+              raise SystemExit('expected handleSave pattern not found')
           PY
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add src/components/connection-dialog.tsx
-          git commit -m 'fix: keep edited connection secrets encrypted [upstream-sync]'
+          if ! git diff --quiet -- src/components/connection-dialog.tsx; then
+            git add src/components/connection-dialog.tsx
+            git commit -m 'fix: keep edited connection secrets encrypted [upstream-sync]'
+          fi
 
-      - name: Fetch upstream
-        run: |
-          git remote add upstream https://github.com/GOODBOY008/r-shell.git || true
-          git fetch upstream main
-
-      - name: Apply low-risk upstream commits and probe remaining changes
+      - name: Cherry-pick compatible upstream commits
         run: |
           : > /tmp/upstream-report.txt
-          for sha in 397e22253b0d778bc216ad97ac294776fffd2e47 43a78205c9d6a3f69bb1137046972a55b4c8acf7; do
+          for sha in \
+            397e22253b0d778bc216ad97ac294776fffd2e47 \
+            43a78205c9d6a3f69bb1137046972a55b4c8acf7 \
+            c2f9475b2a65ff8926b6ca0288e56d4ef83e4521 \
+            8a14da2e292583ae46c89051899566fb239014d9 \
+            adb0d752fac2e1ba41aea070a06e43ab2f24475b
+          do
             if git cherry-pick "$sha" >/tmp/cherry.out 2>&1; then
               echo "$sha APPLIED" >> /tmp/upstream-report.txt
             else
@@ -61,23 +70,12 @@ jobs:
               git cherry-pick --abort || true
             fi
           done
-          for sha in c2f9475b2a65ff8926b6ca0288e56d4ef83e4521 8a14da2e292583ae46c89051899566fb239014d9 adb0d752fac2e1ba41aea070a06e43ab2f24475b; do
-            if git cherry-pick --no-commit "$sha" >/tmp/cherry.out 2>&1; then
-              echo "$sha CLEAN" >> /tmp/upstream-report.txt
-              git reset --hard HEAD
-            else
-              echo "$sha CONFLICT" >> /tmp/upstream-report.txt
-              git diff --name-only --diff-filter=U | sed 's/^/  /' >> /tmp/upstream-report.txt
-              git cherry-pick --abort >/dev/null 2>&1 || true
-              git reset --hard HEAD
-            fi
-          done
           cp /tmp/upstream-report.txt upstream-cherry-pick-report.txt
           git add upstream-cherry-pick-report.txt
-          git commit -m 'chore: record upstream mergeability [upstream-sync]'
+          git commit -m 'chore: record upstream sync result [upstream-sync]'
           git push origin HEAD:review/upstream-sync-2026-08-22
 
-      - name: Remove launcher from main
+      - name: Remove one-shot launcher from main
         run: |
           git fetch origin main
           git checkout -B main origin/main
