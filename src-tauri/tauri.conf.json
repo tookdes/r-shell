@@ -13,8 +13,8 @@
     "windows": [
       {
         "title": "r-shell",
-        "width": 1920,
-        "height": 1080,
+        "width": 1280,
+        "height": 800,
         "fullscreen": false,
         "maximized": false,
         "resizable": true,

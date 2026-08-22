@@ -6,6 +6,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { SearchAddon } from '@xterm/addon-search';
 import { ClipboardAddon } from '@xterm/addon-clipboard';
+import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { invoke } from '@tauri-apps/api/core';
 import { readText as readClipboardText, writeText as writeClipboardText } from '@tauri-apps/plugin-clipboard-manager';
 import { save } from '@tauri-apps/plugin-dialog';
@@ -200,10 +201,15 @@ export function PtyTerminal({
     const fitAddon = new FitAddon();
     const webLinks = new WebLinksAddon();
     const searchAddon = new SearchAddon();
+    const unicode11Addon = new Unicode11Addon();
     
     term.loadAddon(fitAddon);
     term.loadAddon(webLinks);
     term.loadAddon(searchAddon);
+    term.loadAddon(unicode11Addon);
+    if (term.unicode) {
+      term.unicode.activeVersion = '11';
+    }
     const clipboardAddon = new ClipboardAddon();
     term.loadAddon(clipboardAddon);
     clipboardAddonRef.current = clipboardAddon;
