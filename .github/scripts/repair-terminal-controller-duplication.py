@@ -8,13 +8,16 @@ def collapse_duplicate(relative_path: str, block: str) -> None:
     path = root / relative_path
     source = path.read_text()
     count = source.count(block)
-    if count == 1:
-        return
-    if count != 2:
-        raise SystemExit(f"{relative_path}: expected duplicate count 1 or 2, got {count}")
-    first = source.find(block)
-    second = source.find(block, first + len(block))
-    source = source[:second] + source[second + len(block):]
+    if count < 1:
+        raise SystemExit(f"{relative_path}: expected block at least once, got 0")
+
+    while source.count(block) > 1:
+        first = source.find(block)
+        second = source.find(block, first + len(block))
+        if second < 0:
+            raise SystemExit(f"{relative_path}: failed to locate duplicate block")
+        source = source[:second] + source[second + len(block):]
+
     path.write_text(source)
 
 
@@ -98,4 +101,4 @@ mod truecolor_exec_fallback_tests {
 """,
 )
 
-print("controller duplicate insertions repaired")
+print("controller duplicate insertions normalized")
