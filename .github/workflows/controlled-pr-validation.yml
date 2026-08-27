@@ -53,7 +53,7 @@ jobs:
             librsvg2-dev
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test --run
+      - run: pnpm test
       - run: pnpm build
       - run: pnpm tsc --noEmit
       - run: pnpm i18n:check
@@ -88,7 +88,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test --run
+      - run: pnpm test
       - run: pnpm build
       - run: pnpm tsc --noEmit
       - run: pnpm i18n:check
