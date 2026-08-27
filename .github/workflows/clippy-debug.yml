@@ -2,7 +2,7 @@ name: PTY lock hardening repair
 
 on:
   pull_request_target:
-    types: [reopened]
+    types: [synchronize]
 
 permissions:
   contents: write
