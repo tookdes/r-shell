@@ -8,40 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  prepare:
-    if: >-
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.pull_request.head.ref == 'fix/terminal-rendering-upstream-sync'
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: main
-          path: controller
-      - uses: actions/checkout@v7
-        with:
-          ref: fix/terminal-rendering-upstream-sync
-          path: work
-      - name: Apply final secret persistence repair
-        shell: bash
-        run: |
-          cd work
-          python ../controller/.github/scripts/apply-final-secret-repair.py
-          git diff --check
-          if git diff --quiet; then
-            echo "Secret persistence repair already applied"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/components/connection-dialog.tsx src/__tests__/connection-dialog-proxy.test.tsx
-          git commit -m "fix: encrypt secrets before failed connection persistence"
-          git push origin HEAD:fix/terminal-rendering-upstream-sync
-
   validate:
-    needs: prepare
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.ref == 'fix/terminal-rendering-upstream-sync'
@@ -53,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: fix/terminal-rendering-upstream-sync
+          ref: ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-node@v6
         with:
           node-version: '20'
@@ -89,11 +56,21 @@ jobs:
       - name: Compile Rust tests on Windows
         if: matrix.platform == 'windows-latest'
         run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets --no-run
-      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings -A dead_code
+      - name: Run Clippy
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings -A dead_code 2>&1 | tee clippy.log
+      - name: Upload Clippy diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clippy-${{ matrix.platform }}
+          path: clippy.log
+          if-no-files-found: error
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
   windows-package:
-    needs: prepare
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.ref == 'fix/terminal-rendering-upstream-sync'
@@ -101,7 +78,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: fix/terminal-rendering-upstream-sync
+          ref: ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-node@v6
         with:
           node-version: '20'
@@ -113,7 +90,18 @@ jobs:
       - run: pnpm tsc --noEmit
       - run: pnpm i18n:check
       - run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets --no-run
-      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings -A dead_code
+      - name: Run Clippy
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings -A dead_code 2>&1 | tee clippy.log
+      - name: Upload Clippy diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clippy-windows-package
+          path: clippy.log
+          if-no-files-found: error
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
       - run: pnpm tauri build
       - uses: actions/upload-artifact@v4
