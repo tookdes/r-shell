@@ -27,18 +27,19 @@ jobs:
           path: work
           fetch-depth: 0
 
-      - name: Repair and apply reviewed post-fixes
+      - name: Apply reviewed terminal fixes and selected upstream ports
         run: |
           test "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}"
           test "${{ github.event.pull_request.head.ref }}" = "fix/terminal-rendering-upstream-sync"
           python3 controller/.github/scripts/repair-terminal-controller-duplication.py work
           python3 controller/.github/scripts/apply-terminal-post-fixes.py work
+          python3 controller/.github/scripts/apply-selected-upstream-ports.py work
           cd work
           git diff --check
           if ! git diff --quiet; then
             git config user.name github-actions[bot]
             git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-            git add src/components/pty-terminal.tsx src-tauri/src/ssh/mod.rs
-            git commit -m 'fix: repair controlled terminal patch idempotency'
+            git add src/components/pty-terminal.tsx src-tauri/src/ssh/mod.rs src-tauri/src/connection_manager.rs src-tauri/src/websocket_server.rs
+            git commit -m 'perf: port bounded PTY flow and event-driven reads'
             git push origin HEAD:fix/terminal-rendering-upstream-sync
           fi
