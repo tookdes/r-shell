@@ -8,7 +8,6 @@ on:
 
 jobs:
   test:
-    continue-on-error: ${{ matrix.platform == 'windows-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -55,10 +54,10 @@ jobs:
             librsvg2-dev
 
       - name: Install frontend dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Run frontend tests
-        run: pnpm test
+        run: pnpm test --run
 
       - name: Build frontend
         run: pnpm build
@@ -67,16 +66,22 @@ jobs:
         run: pnpm tsc --noEmit
 
       - name: Run Rust tests
+        if: matrix.platform != 'windows-latest'
         working-directory: src-tauri
-        run: cargo test
+        run: cargo test --all-targets
+
+      - name: Compile Rust tests (Windows)
+        if: matrix.platform == 'windows-latest'
+        working-directory: src-tauri
+        run: cargo test --all-targets --no-run
 
       - name: Run Rust clippy
         working-directory: src-tauri
-        run: cargo clippy -- -D warnings -A dead_code
+        run: cargo clippy --all-targets -- -D warnings -A dead_code
 
       - name: Check Rust formatting
         working-directory: src-tauri
-        run: cargo fmt --check
+        run: cargo fmt --all -- --check
 
   i18n:
     runs-on: ubuntu-latest
