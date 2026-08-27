@@ -32,6 +32,7 @@ jobs:
           test "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}"
           test "${{ github.event.pull_request.head.ref }}" = "fix/terminal-rendering-upstream-sync"
           python3 controller/.github/scripts/apply-terminal-core-fixes.py work
+          python3 controller/.github/scripts/apply-terminal-post-fixes.py work
           cd work
           git diff --check
           if ! git diff --quiet; then
