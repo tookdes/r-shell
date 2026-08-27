@@ -18,172 +18,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: main
+          path: controller
+      - uses: actions/checkout@v7
+        with:
           ref: fix/terminal-rendering-upstream-sync
-
+          path: work
       - name: Apply final secret persistence repair
         shell: bash
         run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          dialog_path = Path('src/components/connection-dialog.tsx')
-          dialog = dialog_path.read_text()
-          old = """    } else if (saveAsConnection) {
-      ConnectionStorageManager.saveConnectionWithId(connectionId, {
-        name: config.name,
-        host: config.host,
-        port: config.port || 22,
-        username: config.username,
-        protocol: config.protocol,
-        folder: connectionFolder,
-        authMethod: config.authMethod,
-        password: config.password,
-        privateKeyPath: config.privateKeyPath,
-        passphrase: config.passphrase,
-        proxyType: config.proxyType,
-        proxyHost: config.proxyHost,
-        proxyPort: config.proxyPort,
-        proxyUsername: config.proxyUsername,
-        proxyPassword: config.proxyPassword,
-        compression: config.compression,
-        keepAlive: config.keepAlive,
-        keepAliveInterval: config.keepAliveInterval,
-        serverAliveCountMax: config.serverAliveCountMax,
-      });
-    }
-"""
-          new = """    } else if (saveAsConnection) {
-      const secretsForStorage = await encryptConnectionSecrets({
-        password: config.password,
-        passphrase: config.passphrase,
-        privateKeyData: config.privateKeyData,
-        proxyPassword: config.proxyPassword,
-      });
-      ConnectionStorageManager.saveConnectionWithId(connectionId, {
-        name: config.name,
-        host: config.host,
-        port: config.port || 22,
-        username: config.username,
-        protocol: config.protocol,
-        folder: connectionFolder,
-        authMethod: config.authMethod,
-        password: secretsForStorage.password,
-        privateKeyPath: config.privateKeyPath,
-        privateKeyData: secretsForStorage.privateKeyData,
-        passphrase: secretsForStorage.passphrase,
-        proxyType: config.proxyType,
-        proxyHost: config.proxyHost,
-        proxyPort: config.proxyPort,
-        proxyUsername: config.proxyUsername,
-        proxyPassword: secretsForStorage.proxyPassword,
-        compression: config.compression,
-        keepAlive: config.keepAlive,
-        keepAliveInterval: config.keepAliveInterval,
-        serverAliveCountMax: config.serverAliveCountMax,
-      });
-    }
-"""
-          if old in dialog:
-              dialog = dialog.replace(old, new, 1)
-              dialog_path.write_text(dialog)
-          elif new not in dialog:
-              raise SystemExit('expected SSH new-connection persistence block not found')
-
-          test_path = Path('src/__tests__/connection-dialog-proxy.test.tsx')
-          test = test_path.read_text()
-          test = test.replace(
-              "import { fireEvent, render, screen } from '@testing-library/react';",
-              "import { fireEvent, render, screen, waitFor } from '@testing-library/react';",
-              1,
-          )
-          old_before = """beforeEach(() => {
-  localStorage.clear();
-  localStorage.setItem('sshClientSettings', JSON.stringify({ savePasswords: true }));
-  vi.clearAllMocks();
-});
-"""
-          new_before = """beforeEach(() => {
-  localStorage.clear();
-  localStorage.setItem('sshClientSettings', JSON.stringify({ savePasswords: true }));
-  vi.clearAllMocks();
-  mockInvoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
-    if (command === 'secrets_encrypt') {
-      return `cipher:${String(args?.plaintext ?? '')}`;
-    }
-    if (command === 'secrets_decrypt') {
-      const ciphertext = String(args?.ciphertext ?? '');
-      return ciphertext.startsWith('cipher:') ? ciphertext.slice('cipher:'.length) : ciphertext;
-    }
-    if (command === 'ssh_connect') {
-      return { success: false, error: 'connection refused' };
-    }
-    return undefined;
-  });
-});
-"""
-          if old_before in test:
-              test = test.replace(old_before, new_before, 1)
-          elif new_before not in test:
-              raise SystemExit('expected test beforeEach block not found')
-
-          old_test = """  it('persists proxy config when the edited connection is saved', () => {
-    // Seed a connection without proxy (realistic: proxy was never stored before)
-    ConnectionStorageManager.saveConnectionWithId('conn-1', baseConnection);
-
-    renderDialog({
-      editingConnection: { ...baseConnection, ...proxyConfig },
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-
-    const stored = ConnectionStorageManager.getConnection('conn-1');
-    expect(stored?.proxyType).toBe('http');
-    expect(stored?.proxyHost).toBe('proxy.example.com');
-    expect(stored?.proxyPort).toBe(3128);
-    expect(stored?.proxyUsername).toBe('proxyuser');
-    expect(stored?.proxyPassword).toBe('proxypass');
-  });
-"""
-          new_test = """  it('persists proxy config when the edited connection is saved', async () => {
-    // Seed a connection without proxy (realistic: proxy was never stored before)
-    ConnectionStorageManager.saveConnectionWithId('conn-1', baseConnection);
-
-    renderDialog({
-      editingConnection: { ...baseConnection, ...proxyConfig },
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-
-    await waitFor(() => {
-      expect(ConnectionStorageManager.getConnection('conn-1')?.proxyType).toBe('http');
-    });
-
-    const stored = ConnectionStorageManager.getConnection('conn-1');
-    expect(stored?.proxyHost).toBe('proxy.example.com');
-    expect(stored?.proxyPort).toBe(3128);
-    expect(stored?.proxyUsername).toBe('proxyuser');
-    expect(stored?.password).toBe('enc:v1:cipher:secret');
-    expect(stored?.proxyPassword).toBe('enc:v1:cipher:proxypass');
-  });
-"""
-          if old_test in test:
-              test = test.replace(old_test, new_test, 1)
-          elif new_test not in test:
-              raise SystemExit('expected edited proxy persistence test not found')
-
-          test = test.replace(
-              "    mockInvoke.mockResolvedValueOnce({ success: false, error: 'connection refused' });\n\n",
-              "",
-              1,
-          )
-          test = test.replace(
-              "    expect(connections[0].proxyPassword).toBe('proxypass');",
-              "    expect(connections[0].password).toBe('enc:v1:cipher:secret');\n    expect(connections[0].proxyPassword).toBe('enc:v1:cipher:proxypass');",
-              1,
-          )
-          test_path.write_text(test)
-          PY
-
+          cd work
+          python ../controller/.github/scripts/apply-final-secret-repair.py
           git diff --check
           if git diff --quiet; then
             echo "Secret persistence repair already applied"
@@ -209,23 +54,17 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: fix/terminal-rendering-upstream-sync
-
       - uses: actions/setup-node@v6
         with:
           node-version: '20'
-
       - uses: pnpm/action-setup@v6
-
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: './src-tauri -> target'
-
       - name: Install macOS dependencies
         if: matrix.platform == 'macos-latest'
         run: brew install pkg-config
-
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-latest'
         run: |
@@ -239,21 +78,17 @@ jobs:
             libssl-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev
-
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
       - run: pnpm build
       - run: pnpm tsc --noEmit
       - run: pnpm i18n:check
-
       - name: Run Rust tests
         if: matrix.platform != 'windows-latest'
         run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets
-
       - name: Compile Rust tests on Windows
         if: matrix.platform == 'windows-latest'
         run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets --no-run
-
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings -A dead_code
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
@@ -267,15 +102,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: fix/terminal-rendering-upstream-sync
-
       - uses: actions/setup-node@v6
         with:
           node-version: '20'
-
       - uses: pnpm/action-setup@v6
-
       - uses: dtolnay/rust-toolchain@stable
-
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
       - run: pnpm build
@@ -285,7 +116,6 @@ jobs:
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings -A dead_code
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
       - run: pnpm tauri build
-
       - uses: actions/upload-artifact@v4
         with:
           name: r-shell-windows-package
