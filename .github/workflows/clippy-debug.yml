@@ -1,4 +1,4 @@
-name: Clippy targeted repair
+name: PTY lock hardening repair
 
 on:
   pull_request_target:
@@ -16,37 +16,171 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-      - name: Apply exact Clippy fixes
+      - name: Apply exact PTY lock fixes
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
-          ftp = Path('src-tauri/src/ftp_client.rs')
-          text = ftp.read_text()
-          old = '    ///   - modified = bogus dates parsed from misaligned size/perms tokens\n    /// After the fix, every field is correctly extracted.'
-          new = '    ///   - modified = bogus dates parsed from misaligned size/perms tokens\n    ///\n    /// After the fix, every field is correctly extracted.'
-          if text.count(old) != 1:
-              raise SystemExit('unexpected ftp_client.rs lint context')
-          ftp.write_text(text.replace(old, new, 1))
+          path = Path('src-tauri/src/connection_manager.rs')
+          text = path.read_text()
 
-          ssh = Path('src-tauri/src/ssh/tests.rs')
-          text = ssh.read_text()
-          old = '#[cfg(test)]\nmod tests {'
-          new = '#[cfg(test)]\nmod client_tests {'
-          if text.count(old) != 1:
-              raise SystemExit('unexpected ssh/tests.rs lint context')
-          ssh.write_text(text.replace(old, new, 1))
+          old_write = '''    pub async fn write_to_pty(&self, connection_id: &str, data: Vec<u8>) -> Result<()> {
+        let pty_sessions = self.pty_sessions.read().await;
+        let pty = pty_sessions
+            .get(connection_id)
+            .ok_or_else(|| anyhow::anyhow!("PTY connection not found"))?;
+
+        match pty.input_tx.try_send(data) {
+            Ok(_) => Ok(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(data)) => pty
+                .input_tx
+                .send(data)
+                .await
+                .map_err(|_| anyhow::anyhow!("PTY channel closed")),
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                Err(anyhow::anyhow!("PTY channel closed"))
+            }
+        }
+    }
+'''
+          new_write = '''    pub async fn write_to_pty(&self, connection_id: &str, data: Vec<u8>) -> Result<()> {
+        let input_tx = {
+            let pty_sessions = self.pty_sessions.read().await;
+            let pty = pty_sessions
+                .get(connection_id)
+                .ok_or_else(|| anyhow::anyhow!("PTY connection not found"))?;
+            pty.input_tx.clone()
+        };
+
+        match input_tx.try_send(data) {
+            Ok(_) => Ok(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(data)) => input_tx
+                .send(data)
+                .await
+                .map_err(|_| anyhow::anyhow!("PTY channel closed")),
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                Err(anyhow::anyhow!("PTY channel closed"))
+            }
+        }
+    }
+'''
+
+          old_resize = '''    pub async fn resize_pty(&self, connection_id: &str, cols: u32, rows: u32) -> Result<()> {
+        let pty_sessions = self.pty_sessions.read().await;
+        let pty = pty_sessions
+            .get(connection_id)
+            .ok_or_else(|| anyhow::anyhow!("PTY connection not found"))?;
+
+        pty.resize_tx
+            .send((cols, rows))
+            .await
+            .map_err(|_| anyhow::anyhow!("PTY resize channel closed"))
+    }
+'''
+          new_resize = '''    pub async fn resize_pty(&self, connection_id: &str, cols: u32, rows: u32) -> Result<()> {
+        let resize_tx = {
+            let pty_sessions = self.pty_sessions.read().await;
+            let pty = pty_sessions
+                .get(connection_id)
+                .ok_or_else(|| anyhow::anyhow!("PTY connection not found"))?;
+            pty.resize_tx.clone()
+        };
+
+        resize_tx
+            .send((cols, rows))
+            .await
+            .map_err(|_| anyhow::anyhow!("PTY resize channel closed"))
+    }
+'''
+
+          marker = '''        drop(output_tx);
+        assert!(mgr.read_from_pty("event-read", None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_get_connection_type_returns_none_for_unknown() {
+'''
+          replacement = '''        drop(output_tx);
+        assert!(mgr.read_from_pty("event-read", None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_blocked_pty_sends_do_not_hold_session_map_lock() {
+        let mgr = Arc::new(ConnectionManager::new());
+        let (input_tx, mut input_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let (_output_tx, output_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let (resize_tx, mut resize_rx) = tokio::sync::mpsc::channel::<(u32, u32)>(1);
+
+        input_tx.send(b"occupied".to_vec()).await.unwrap();
+        resize_tx.send((1, 1)).await.unwrap();
+
+        let session = PtySession {
+            input_tx,
+            output_rx: Arc::new(tokio::sync::Mutex::new(output_rx)),
+            resize_tx,
+            cancel: CancellationToken::new(),
+        };
+        mgr.pty_sessions
+            .write()
+            .await
+            .insert("blocked-sends".to_string(), Arc::new(session));
+
+        let write_mgr = mgr.clone();
+        let write_task = tokio::spawn(async move {
+            write_mgr
+                .write_to_pty("blocked-sends", b"next".to_vec())
+                .await
+        });
+        let resize_mgr = mgr.clone();
+        let resize_task = tokio::spawn(async move {
+            resize_mgr.resize_pty("blocked-sends", 80, 24).await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        let close = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            mgr.close_pty_connection("blocked-sends", None),
+        )
+        .await;
+        assert!(
+            close.is_ok(),
+            "blocked PTY input/resize sends must not hold the pty_sessions map lock"
+        );
+
+        assert_eq!(input_rx.recv().await.unwrap(), b"occupied".to_vec());
+        assert_eq!(resize_rx.recv().await.unwrap(), (1, 1));
+        assert!(write_task.await.unwrap().is_ok());
+        assert!(resize_task.await.unwrap().is_ok());
+        assert_eq!(input_rx.recv().await.unwrap(), b"next".to_vec());
+        assert_eq!(resize_rx.recv().await.unwrap(), (80, 24));
+    }
+
+    #[tokio::test]
+    async fn test_get_connection_type_returns_none_for_unknown() {
+'''
+
+          replacements = [
+              (old_write, new_write, 'write_to_pty'),
+              (old_resize, new_resize, 'resize_pty'),
+              (marker, replacement, 'lock regression test marker'),
+          ]
+          for old, new, label in replacements:
+              if text.count(old) != 1:
+                  raise SystemExit(f'unexpected {label} context: {text.count(old)} matches')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text)
           PY
           git diff --check
-          git diff -- src-tauri/src/ftp_client.rs src-tauri/src/ssh/tests.rs
+          git diff -- src-tauri/src/connection_manager.rs
       - name: Commit repair
         shell: bash
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add src-tauri/src/ftp_client.rs src-tauri/src/ssh/tests.rs
-          git commit -m 'fix: satisfy current Rust clippy lints'
+          git add src-tauri/src/connection_manager.rs
+          git commit -m 'fix: release PTY session map locks before sends'
           git push origin HEAD:${{ github.event.pull_request.head.ref }}
