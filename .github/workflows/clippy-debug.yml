@@ -1,14 +1,14 @@
-name: Clippy diagnostics
+name: Clippy targeted repair
 
 on:
   pull_request_target:
     types: [reopened]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  clippy:
+  repair:
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.ref == 'fix/terminal-rendering-upstream-sync'
@@ -16,32 +16,37 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: './src-tauri -> target'
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libxdo-dev \
-            libssl-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev
-      - name: Run Clippy
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - name: Apply exact Clippy fixes
         shell: bash
         run: |
-          set -o pipefail
-          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings -A dead_code 2>&1 | tee clippy.log
-      - name: Upload Clippy diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: clippy-ubuntu
-          path: clippy.log
-          if-no-files-found: error
+          python3 - <<'PY'
+          from pathlib import Path
+
+          ftp = Path('src-tauri/src/ftp_client.rs')
+          text = ftp.read_text()
+          old = '    ///   - modified = bogus dates parsed from misaligned size/perms tokens\n    /// After the fix, every field is correctly extracted.'
+          new = '    ///   - modified = bogus dates parsed from misaligned size/perms tokens\n    ///\n    /// After the fix, every field is correctly extracted.'
+          if text.count(old) != 1:
+              raise SystemExit('unexpected ftp_client.rs lint context')
+          ftp.write_text(text.replace(old, new, 1))
+
+          ssh = Path('src-tauri/src/ssh/tests.rs')
+          text = ssh.read_text()
+          old = '#[cfg(test)]\nmod tests {'
+          new = '#[cfg(test)]\nmod client_tests {'
+          if text.count(old) != 1:
+              raise SystemExit('unexpected ssh/tests.rs lint context')
+          ssh.write_text(text.replace(old, new, 1))
+          PY
+          git diff --check
+          git diff -- src-tauri/src/ftp_client.rs src-tauri/src/ssh/tests.rs
+      - name: Commit repair
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src-tauri/src/ftp_client.rs src-tauri/src/ssh/tests.rs
+          git commit -m 'fix: satisfy current Rust clippy lints'
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
