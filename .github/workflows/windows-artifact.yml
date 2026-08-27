@@ -22,7 +22,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Frontend tests
-        run: pnpm test --run
+        run: pnpm test
 
       - name: Frontend build
         run: pnpm build
