@@ -43,7 +43,10 @@ jobs:
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
       - name: Build Windows package
-        run: pnpm tauri build
+        # PR validation does not have the updater signing private key. Keep the
+        # release config unchanged, but skip updater-only .sig generation here;
+        # the normal executable, NSIS installer, and MSI are still produced.
+        run: pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
       - name: Upload Windows binaries
         uses: actions/upload-artifact@v4

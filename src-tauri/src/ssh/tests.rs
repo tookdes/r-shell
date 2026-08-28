@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod tests {
+mod client_tests {
     use crate::ssh::{AuthMethod, SshClient, SshConfig};
     use std::sync::Arc;
     use tokio::sync::RwLock;
