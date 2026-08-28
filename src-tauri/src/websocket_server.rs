@@ -528,10 +528,15 @@ impl WebSocketServer {
 
                 tokio::spawn(async move {
                     let mut accumulated = Vec::with_capacity(OUTPUT_FLUSH_BYTES);
-                    let mut last_flush = tokio::time::Instant::now();
+                    let mut flush_deadline: Option<tokio::time::Instant> = None;
 
                     loop {
-                        // --- Read from PTY (1 ms poll) ---
+                        // Event-driven: block when idle. Once the first byte of a
+                        // batch arrives, preserve one absolute 10 ms deadline so a
+                        // continuous trickle cannot postpone the flush forever.
+                        let max_wait = flush_deadline.map(|deadline| {
+                            deadline.saturating_duration_since(tokio::time::Instant::now())
+                        });
                         let read_result = tokio::select! {
                             biased;
                             _ = cancel_token.cancelled() => {
@@ -539,7 +544,6 @@ impl WebSocketServer {
                                     "PTY reader task cancelled for {}",
                                     connection_id_clone
                                 );
-                                // Flush any remaining data before exiting.
                                 let _ = flush_output(
                                     &tx_clone,
                                     &connection_id_clone,
@@ -548,65 +552,68 @@ impl WebSocketServer {
                                 ).await;
                                 return;
                             }
-                            result = connection_manager.read_from_pty(&connection_id_clone) => result,
+                            result = connection_manager.read_from_pty(
+                                &connection_id_clone,
+                                max_wait,
+                            ) => result,
                         };
 
                         match read_result {
-                            Ok(data) if data.is_empty() => {
-                                // 1 ms poll returned nothing — flush if interval elapsed.
-                                if !accumulated.is_empty()
-                                    && last_flush.elapsed().as_millis() >= OUTPUT_FLUSH_INTERVAL_MS
-                                {
-                                    // Wait for 1 frontend ACK before sending.
-                                    let ok = tokio::select! {
-                                        biased;
-                                        _ = cancel_token.cancelled() => false,
-                                        r = credits.acquire() => r.map(|p| { p.forget(); true }).unwrap_or(false),
-                                    };
-                                    if !ok {
-                                        break;
-                                    }
-                                    if flush_output(
-                                        &tx_clone,
-                                        &connection_id_clone,
-                                        &mut accumulated,
-                                        &cancel_token,
-                                    )
-                                    .await
-                                        == SendOutcome::Closed
-                                    {
-                                        break;
-                                    }
-                                    last_flush = tokio::time::Instant::now();
+                            Ok(None) => {
+                                let ok = tokio::select! {
+                                    biased;
+                                    _ = cancel_token.cancelled() => false,
+                                    r = credits.acquire() => r.map(|p| { p.forget(); true }).unwrap_or(false),
+                                };
+                                if !ok {
+                                    break;
                                 }
+                                if flush_output(
+                                    &tx_clone,
+                                    &connection_id_clone,
+                                    &mut accumulated,
+                                    &cancel_token,
+                                )
+                                .await
+                                    == SendOutcome::Closed
+                                {
+                                    break;
+                                }
+                                flush_deadline = None;
                             }
-                            Ok(data) => {
-                                accumulated.extend_from_slice(&data);
-                                if accumulated.len() >= OUTPUT_FLUSH_BYTES
-                                    || last_flush.elapsed().as_millis() >= OUTPUT_FLUSH_INTERVAL_MS
-                                {
-                                    // Wait for 1 frontend ACK before sending.
-                                    let ok = tokio::select! {
-                                        biased;
-                                        _ = cancel_token.cancelled() => false,
-                                        r = credits.acquire() => r.map(|p| { p.forget(); true }).unwrap_or(false),
-                                    };
-                                    if !ok {
-                                        break;
-                                    }
-                                    if flush_output(
-                                        &tx_clone,
-                                        &connection_id_clone,
-                                        &mut accumulated,
-                                        &cancel_token,
-                                    )
-                                    .await
-                                        == SendOutcome::Closed
-                                    {
-                                        break;
-                                    }
-                                    last_flush = tokio::time::Instant::now();
+                            Ok(Some(data)) => {
+                                if accumulated.is_empty() {
+                                    flush_deadline = Some(
+                                        tokio::time::Instant::now()
+                                            + Duration::from_millis(
+                                                OUTPUT_FLUSH_INTERVAL_MS as u64,
+                                            ),
+                                    );
                                 }
+                                accumulated.extend_from_slice(&data);
+                                if accumulated.len() < OUTPUT_FLUSH_BYTES {
+                                    continue;
+                                }
+                                let ok = tokio::select! {
+                                    biased;
+                                    _ = cancel_token.cancelled() => false,
+                                    r = credits.acquire() => r.map(|p| { p.forget(); true }).unwrap_or(false),
+                                };
+                                if !ok {
+                                    break;
+                                }
+                                if flush_output(
+                                    &tx_clone,
+                                    &connection_id_clone,
+                                    &mut accumulated,
+                                    &cancel_token,
+                                )
+                                .await
+                                    == SendOutcome::Closed
+                                {
+                                    break;
+                                }
+                                flush_deadline = None;
                             }
                             Err(e) => {
                                 tracing::error!(

@@ -4,12 +4,15 @@
  * were updated in local component state but never written to storage.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { ConnectionDialog, type ConnectionConfig } from '../components/connection-dialog';
 import { ConnectionStorageManager } from '../lib/connection-storage';
 
 vi.mock('@tauri-apps/api/core', () => ({
-  invoke: vi.fn(),
+  invoke: vi.fn(async (command: string) => {
+    if (command === 'secrets_encrypt') return 'test-ciphertext';
+    return undefined;
+  }),
 }));
 
 vi.mock('sonner', () => ({
@@ -66,18 +69,20 @@ describe('ConnectionDialog advanced tab save', () => {
     const intervalInput = screen.getByLabelText('Interval (seconds)');
     fireEvent.change(intervalInput, { target: { value: '30' } });
 
-    // Save
+    // Save performs secret encryption asynchronously before updating storage.
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
-    expect(ConnectionStorageManager.updateConnection).toHaveBeenCalledWith(
-      'conn-1',
-      expect.objectContaining({
-        compression: false,
-        keepAlive: true,
-        keepAliveInterval: 30,
-        serverAliveCountMax: 3,
-      }),
-    );
+    await waitFor(() => {
+      expect(ConnectionStorageManager.updateConnection).toHaveBeenCalledWith(
+        'conn-1',
+        expect.objectContaining({
+          compression: false,
+          keepAlive: true,
+          keepAliveInterval: 30,
+          serverAliveCountMax: 3,
+        }),
+      );
+    });
   });
 
   it('shows default advanced values for legacy connections missing them', async () => {
@@ -105,7 +110,7 @@ describe('ConnectionDialog advanced tab save', () => {
     expect((screen.getByLabelText('Max Count') as HTMLInputElement).value).toBe('3');
   });
 
-  it('persists existing proxy config unchanged when saving', async () => {
+  it('persists existing proxy config unchanged except for encrypted secret storage', async () => {
     const editingWithProxy: ConnectionConfig = {
       ...baseConnection,
       id: 'conn-2',
@@ -127,15 +132,17 @@ describe('ConnectionDialog advanced tab save', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
-    expect(ConnectionStorageManager.updateConnection).toHaveBeenCalledWith(
-      'conn-2',
-      expect.objectContaining({
-        proxyType: 'socks5',
-        proxyHost: 'proxy.example.com',
-        proxyPort: 1080,
-        proxyUsername: 'user',
-        proxyPassword: 'pass',
-      }),
-    );
+    await waitFor(() => {
+      expect(ConnectionStorageManager.updateConnection).toHaveBeenCalledWith(
+        'conn-2',
+        expect.objectContaining({
+          proxyType: 'socks5',
+          proxyHost: 'proxy.example.com',
+          proxyPort: 1080,
+          proxyUsername: 'user',
+          proxyPassword: 'enc:v1:test-ciphertext',
+        }),
+      );
+    });
   });
 });

@@ -81,6 +81,39 @@ pub(crate) fn truecolor_login_shell_command(login_shell: &str) -> Option<Vec<u8>
     .into()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TruecolorExecAction {
+    KeepCurrentChannel,
+    ReopenAndRequestShell,
+}
+
+fn truecolor_exec_action<T, E>(result: &std::result::Result<T, E>) -> TruecolorExecAction {
+    if result.is_ok() {
+        TruecolorExecAction::KeepCurrentChannel
+    } else {
+        TruecolorExecAction::ReopenAndRequestShell
+    }
+}
+
+#[cfg(test)]
+mod truecolor_exec_fallback_tests {
+    use super::{truecolor_exec_action, TruecolorExecAction};
+
+    #[test]
+    fn exec_failure_requires_a_fresh_shell_channel() {
+        let accepted = Ok::<(), &'static str>(());
+        let rejected = Err::<(), &'static str>("exec rejected");
+        assert_eq!(
+            truecolor_exec_action(&accepted),
+            TruecolorExecAction::KeepCurrentChannel
+        );
+        assert_eq!(
+            truecolor_exec_action(&rejected),
+            TruecolorExecAction::ReopenAndRequestShell
+        );
+    }
+}
+
 pub(crate) fn bash_shell_integration_command(version: BashVersion) -> Vec<u8> {
     let prompt_command = if version >= (BashVersion { major: 5, minor: 1 }) {
         r#"if declare -p PROMPT_COMMAND &>/dev/null; then PROMPT_COMMAND=("${PROMPT_COMMAND[@]}" __rshell_report_cwd); else PROMPT_COMMAND=(__rshell_report_cwd); fi; "#
@@ -572,7 +605,21 @@ impl SshClient {
                 .as_deref()
                 .and_then(truecolor_login_shell_command)
             {
-                channel.exec(true, String::from_utf8(command)?).await?;
+                let exec_result = channel.exec(true, String::from_utf8(command)?).await;
+                if truecolor_exec_action(&exec_result) == TruecolorExecAction::ReopenAndRequestShell
+                {
+                    tracing::warn!(
+                        "[PTY] TrueColor login-shell exec wrapper rejected; reopening a fresh channel for request_shell"
+                    );
+                    let _ = channel.close().await;
+                    channel = session.channel_open_session().await?;
+                    channel
+                        .request_pty(true, "xterm-256color", cols, rows, 0, 0, terminal_modes)
+                        .await?;
+                    let _ = channel.set_env(false, "COLORTERM", "truecolor").await;
+                    let _ = channel.set_env(false, "RUNEWIDTH_EASTASIAN", "0").await;
+                    channel.request_shell(true).await?;
+                }
             } else {
                 // Best effort only: some servers may accept it even though this
                 // is not guaranteed without the wrapper above.

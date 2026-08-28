@@ -442,6 +442,12 @@ export function ConnectionDialog({
         lastConnected: new Date().toISOString(),
       });
     } else if (saveAsConnection) {
+      const secretsForStorage = await encryptConnectionSecrets({
+        password: config.password,
+        passphrase: config.passphrase,
+        privateKeyData: config.privateKeyData,
+        proxyPassword: config.proxyPassword,
+      });
       ConnectionStorageManager.saveConnectionWithId(connectionId, {
         name: config.name,
         host: config.host,
@@ -450,14 +456,15 @@ export function ConnectionDialog({
         protocol: config.protocol,
         folder: connectionFolder,
         authMethod: config.authMethod,
-        password: config.password,
+        password: secretsForStorage.password,
         privateKeyPath: config.privateKeyPath,
-        passphrase: config.passphrase,
+        privateKeyData: secretsForStorage.privateKeyData,
+        passphrase: secretsForStorage.passphrase,
         proxyType: config.proxyType,
         proxyHost: config.proxyHost,
         proxyPort: config.proxyPort,
         proxyUsername: config.proxyUsername,
-        proxyPassword: config.proxyPassword,
+        proxyPassword: secretsForStorage.proxyPassword,
         compression: config.compression,
         keepAlive: config.keepAlive,
         keepAliveInterval: config.keepAliveInterval,
@@ -623,12 +630,12 @@ const handleCancelConnectionAttempt = async () => {
   const handleSave = async () => {
     if (!editingConnection?.id) return;
 
-    const secretsForStorage = {
+    const secretsForStorage = await encryptConnectionSecrets({
       password: config.password,
       passphrase: config.passphrase,
       privateKeyData: config.privateKeyData,
       proxyPassword: config.proxyPassword,
-    };
+    });
 
     // Save updated connection to storage
     ConnectionStorageManager.updateConnection(editingConnection.id, {

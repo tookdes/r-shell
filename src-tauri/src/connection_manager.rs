@@ -232,15 +232,17 @@ impl ConnectionManager {
     /// Prefer non-blocking try_send; if the channel is full, await ordered send
     /// so keystrokes/paste never race with later spawn tasks.
     pub async fn write_to_pty(&self, connection_id: &str, data: Vec<u8>) -> Result<()> {
-        let pty_sessions = self.pty_sessions.read().await;
-        let pty = pty_sessions
-            .get(connection_id)
-            .ok_or_else(|| anyhow::anyhow!("PTY connection not found"))?;
+        let input_tx = {
+            let pty_sessions = self.pty_sessions.read().await;
+            let pty = pty_sessions
+                .get(connection_id)
+                .ok_or_else(|| anyhow::anyhow!("PTY connection not found"))?;
+            pty.input_tx.clone()
+        };
 
-        match pty.input_tx.try_send(data) {
+        match input_tx.try_send(data) {
             Ok(_) => Ok(()),
-            Err(tokio::sync::mpsc::error::TrySendError::Full(data)) => pty
-                .input_tx
+            Err(tokio::sync::mpsc::error::TrySendError::Full(data)) => input_tx
                 .send(data)
                 .await
                 .map_err(|_| anyhow::anyhow!("PTY channel closed")),
@@ -250,32 +252,34 @@ impl ConnectionManager {
         }
     }
 
-    /// Read data from PTY (output for display)
-    /// OPTIMIZED: Use try_recv first for immediate data, then short timeout
-    pub async fn read_from_pty(&self, connection_id: &str) -> Result<Vec<u8>> {
-        let pty_sessions = self.pty_sessions.read().await;
-        let pty = pty_sessions
-            .get(connection_id)
-            .ok_or_else(|| anyhow::anyhow!("PTY connection not found"))?;
+    /// Read data from PTY (output for display), event-driven with no idle polling.
+    /// With no deadline this blocks until output arrives. A deadline is used only
+    /// while the WebSocket reader already has pending bytes to preserve the 10ms
+    /// small-output flush cadence.
+    pub async fn read_from_pty(
+        &self,
+        connection_id: &str,
+        max_wait: Option<std::time::Duration>,
+    ) -> Result<Option<Vec<u8>>> {
+        let pty = {
+            let pty_sessions = self.pty_sessions.read().await;
+            pty_sessions
+                .get(connection_id)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("PTY connection not found"))?
+        };
 
         let mut rx = pty.output_rx.lock().await;
-
-        // Try immediate read first (non-blocking)
-        match rx.try_recv() {
-            Ok(data) => return Ok(data),
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                // No immediate data, use short timeout
-            }
-            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                return Err(anyhow::anyhow!("PTY connection closed"));
-            }
-        }
-
-        // Fall back to short timeout wait (1ms for ultra-low latency)
-        match tokio::time::timeout(tokio::time::Duration::from_millis(1), rx.recv()).await {
-            Ok(Some(data)) => Ok(data),
-            Ok(None) => Err(anyhow::anyhow!("PTY connection closed")),
-            Err(_) => Ok(Vec::new()), // Timeout - no data available
+        match max_wait {
+            None => match rx.recv().await {
+                Some(data) => Ok(Some(data)),
+                None => Err(anyhow::anyhow!("PTY connection closed")),
+            },
+            Some(duration) => match tokio::time::timeout(duration, rx.recv()).await {
+                Ok(Some(data)) => Ok(Some(data)),
+                Ok(None) => Err(anyhow::anyhow!("PTY connection closed")),
+                Err(_) => Ok(None),
+            },
         }
     }
 
@@ -316,12 +320,15 @@ impl ConnectionManager {
 
     /// Resize PTY terminal (send window-change to remote SSH channel)
     pub async fn resize_pty(&self, connection_id: &str, cols: u32, rows: u32) -> Result<()> {
-        let pty_sessions = self.pty_sessions.read().await;
-        let pty = pty_sessions
-            .get(connection_id)
-            .ok_or_else(|| anyhow::anyhow!("PTY connection not found"))?;
+        let resize_tx = {
+            let pty_sessions = self.pty_sessions.read().await;
+            let pty = pty_sessions
+                .get(connection_id)
+                .ok_or_else(|| anyhow::anyhow!("PTY connection not found"))?;
+            pty.resize_tx.clone()
+        };
 
-        pty.resize_tx
+        resize_tx
             .send((cols, rows))
             .await
             .map_err(|_| anyhow::anyhow!("PTY resize channel closed"))
@@ -501,6 +508,91 @@ mod tests {
         let mgr = ConnectionManager::new();
         let connections = mgr.list_connections().await;
         assert!(connections.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_read_from_pty_is_event_driven_and_honors_flush_deadline() {
+        let mgr = ConnectionManager::new();
+        let (input_tx, _input_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let (output_tx, output_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
+        let (resize_tx, _resize_rx) = tokio::sync::mpsc::channel::<(u32, u32)>(1);
+        let session = PtySession {
+            input_tx,
+            output_rx: Arc::new(tokio::sync::Mutex::new(output_rx)),
+            resize_tx,
+            cancel: CancellationToken::new(),
+        };
+        mgr.pty_sessions
+            .write()
+            .await
+            .insert("event-read".to_string(), Arc::new(session));
+
+        output_tx.send(b"hello".to_vec()).await.unwrap();
+        let data = mgr
+            .read_from_pty("event-read", None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(data, b"hello");
+
+        let deadline_result = mgr
+            .read_from_pty("event-read", Some(std::time::Duration::from_millis(10)))
+            .await
+            .unwrap();
+        assert!(deadline_result.is_none());
+
+        drop(output_tx);
+        assert!(mgr.read_from_pty("event-read", None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_blocked_pty_sends_do_not_hold_session_map_lock() {
+        let mgr = Arc::new(ConnectionManager::new());
+        let (input_tx, mut input_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let (_output_tx, output_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let (resize_tx, mut resize_rx) = tokio::sync::mpsc::channel::<(u32, u32)>(1);
+
+        input_tx.send(b"occupied".to_vec()).await.unwrap();
+        resize_tx.send((1, 1)).await.unwrap();
+
+        let session = PtySession {
+            input_tx,
+            output_rx: Arc::new(tokio::sync::Mutex::new(output_rx)),
+            resize_tx,
+            cancel: CancellationToken::new(),
+        };
+        mgr.pty_sessions
+            .write()
+            .await
+            .insert("blocked-sends".to_string(), Arc::new(session));
+
+        let write_mgr = mgr.clone();
+        let write_task = tokio::spawn(async move {
+            write_mgr
+                .write_to_pty("blocked-sends", b"next".to_vec())
+                .await
+        });
+        let resize_mgr = mgr.clone();
+        let resize_task =
+            tokio::spawn(async move { resize_mgr.resize_pty("blocked-sends", 80, 24).await });
+
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        let close = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            mgr.close_pty_connection("blocked-sends", None),
+        )
+        .await;
+        assert!(
+            close.is_ok(),
+            "blocked PTY input/resize sends must not hold the pty_sessions map lock"
+        );
+
+        assert_eq!(input_rx.recv().await.unwrap(), b"occupied".to_vec());
+        assert_eq!(resize_rx.recv().await.unwrap(), (1, 1));
+        assert!(write_task.await.unwrap().is_ok());
+        assert!(resize_task.await.unwrap().is_ok());
+        assert_eq!(input_rx.recv().await.unwrap(), b"next".to_vec());
+        assert_eq!(resize_rx.recv().await.unwrap(), (80, 24));
     }
 
     #[tokio::test]
