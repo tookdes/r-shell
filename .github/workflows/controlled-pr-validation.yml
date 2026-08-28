@@ -103,7 +103,8 @@ jobs:
           path: clippy.log
           if-no-files-found: error
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
-      - run: pnpm tauri build
+      - name: Build Windows package without updater signing
+        run: pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
       - uses: actions/upload-artifact@v4
         with:
           name: r-shell-windows-package
