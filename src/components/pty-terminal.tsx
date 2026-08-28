@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { WebglAddon } from '@xterm/addon-webgl';
 import { SearchAddon } from '@xterm/addon-search';
 import { ClipboardAddon } from '@xterm/addon-clipboard';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
@@ -19,6 +18,13 @@ import { signalReady } from '../lib/restoration-manager';
 import { useTerminalCallbacks } from '../lib/terminal-callbacks-context';
 import { loadConnectionTransportSettings } from '../lib/connection-transport-settings';
 import { buildPtyInputFrame, encodeModifiedEnterCsiU, normalizePtyInput } from '../lib/pty-input';
+import { routePtyOutputFrame } from '../lib/pty-output-frame';
+import {
+  configureTerminalDiagnostics,
+  flushTerminalDiagnostics,
+  recordTerminalDiagnostic,
+  shortConnectionHash,
+} from '../lib/terminal-diagnostics';
 import i18n from '../lib/i18n';
 import { registerTerminalWorkingDirectoryHandler } from '../lib/terminal-working-directory';
 import { TERMINAL_COMMAND_EVENT, type TerminalCommandDetail } from '../lib/terminal-commands';
@@ -75,13 +81,17 @@ export function PtyTerminal({
   const fitRef = React.useRef<FitAddon | null>(null);
   const searchRef = React.useRef<SearchAddon | null>(null);
   const wsRef = React.useRef<WebSocket | null>(null);
-  const rendererRef = React.useRef<string>('canvas');
-  const webglAddonRef = React.useRef<WebglAddon | null>(null);
+  const rendererRef = React.useRef<string>('dom');
   const clipboardAddonRef = React.useRef<ClipboardAddon | null>(null);
   const containerRef = React.useRef<HTMLDivElement | null>(null);
   const initialIsActiveRef = React.useRef(isActive);
-  const wasActiveRef = React.useRef(isActive);
+  const wasActiveRef = React.useRef(false);
   const onOutputRef = React.useRef(onOutput);
+  const activeRef = React.useRef(isActive);
+  const framesReceivedRef = React.useRef(0);
+  const bytesReceivedRef = React.useRef(0);
+  const wrongConnectionFramesDroppedRef = React.useRef(0);
+  const outputWatermarkRef = React.useRef(0);
   
   // Search bar state
   const [searchVisible, setSearchVisible] = React.useState(false);
@@ -103,6 +113,60 @@ export function PtyTerminal({
   React.useEffect(() => {
     onOutputRef.current = onOutput;
   }, [onOutput]);
+
+  React.useEffect(() => {
+    activeRef.current = isActive;
+  }, [isActive]);
+
+  React.useEffect(() => {
+    configureTerminalDiagnostics((events) =>
+      invoke<void>('append_terminal_diagnostics', { events }),
+    );
+
+    const connectionHash = shortConnectionHash(connectionId);
+    const snapshot = (
+      event: string,
+      flags: { fit?: boolean; resize?: boolean; dispose?: boolean; reconnect?: boolean } = {},
+    ) => {
+      const term = xtermRef.current;
+      const ws = wsRef.current;
+      const websocketState = ws
+        ? ['connecting', 'open', 'closing', 'closed'][ws.readyState] ?? `unknown-${ws.readyState}`
+        : 'none';
+      recordTerminalDiagnostic({
+        event,
+        connectionHash,
+        renderer: rendererRef.current,
+        active: activeRef.current,
+        cols: term?.cols,
+        rows: term?.rows,
+        websocketState,
+        ptyGeneration: ptyGenerationRef.current ?? undefined,
+        framesReceived: framesReceivedRef.current,
+        bytesReceived: bytesReceivedRef.current,
+        wrongConnectionFramesDropped: wrongConnectionFramesDroppedRef.current,
+        outputWatermark: outputWatermarkRef.current,
+        ...flags,
+      });
+    };
+
+    snapshot('component_mounted');
+    const heartbeat = window.setInterval(() => snapshot('heartbeat'), 5000);
+    const flush = () => { void flushTerminalDiagnostics(); };
+    const flushWhenHidden = () => {
+      if (document.visibilityState === 'hidden') flush();
+    };
+    window.addEventListener('beforeunload', flush);
+    document.addEventListener('visibilitychange', flushWhenHidden);
+
+    return () => {
+      window.clearInterval(heartbeat);
+      window.removeEventListener('beforeunload', flush);
+      document.removeEventListener('visibilitychange', flushWhenHidden);
+      snapshot('component_disposed', { dispose: true });
+      flush();
+    };
+  }, [connectionId]);
   
   // PTY session generation — used in Close to avoid stale-close races
   const ptyGenerationRef = React.useRef<number | null>(null);
@@ -173,16 +237,34 @@ export function PtyTerminal({
 
   // Get appearance settings - reloads when appearanceKey changes
   const appearance = React.useMemo(() => loadAppearanceSettings(), [appearanceKey]);
-  
-  // Track whether we need to switch renderers due to background image change
-  // This is necessary because WebGL renderer doesn't support transparency
-  const hasBackgroundImage = !!appearance.backgroundImage;
-  
-  // Use a key that only changes when we need to switch renderers
-  const terminalKey = React.useMemo(
-    () => (hasBackgroundImage ? 'bg' : 'no-bg'),
-    [hasBackgroundImage],
-  );
+
+  const completeVisibleActivation = React.useCallback((): boolean => {
+    if (!activeRef.current) return false;
+    if (wasActiveRef.current) return true;
+
+    const term = xtermRef.current;
+    const fitAddon = fitRef.current;
+    const container = containerRef.current;
+    if (!term || !fitAddon || !container) return false;
+    if (container.offsetWidth <= 0 || container.offsetHeight <= 0) return false;
+
+    fitAddon.fit();
+    recordTerminalDiagnostic({
+      event: 'fit_active_tab',
+      connectionHash: shortConnectionHash(connectionId),
+      renderer: rendererRef.current,
+      active: true,
+      cols: term.cols,
+      rows: term.rows,
+      fit: true,
+    });
+    if (term.rows > 0) {
+      term.refresh(0, term.rows - 1);
+    }
+    term.focus();
+    wasActiveRef.current = true;
+    return true;
+  }, [connectionId]);
   
   React.useEffect(() => {
     if (!terminalRef.current) return;
@@ -216,32 +298,30 @@ export function PtyTerminal({
     
     term.open(terminalRef.current);
     
-    // Load WebGL renderer for better performance
-    // NOTE: WebGL doesn't support transparency, so skip it when background image is set
-    if (!appearance.backgroundImage) {
-      try {
-        const webglAddon = new WebglAddon();
-        // Dispose listener — xterm calls this when the addon is disposed
-        webglAddon.onContextLoss(() => {
-          webglAddon.dispose();
-          webglAddonRef.current = null;
-          rendererRef.current = 'canvas';
-          console.warn('[PTY Terminal] WebGL context lost, falling back to canvas');
-        });
-        term.loadAddon(webglAddon);
-        webglAddonRef.current = webglAddon;
-        rendererRef.current = 'webgl';
-        console.log('[PTY Terminal] WebGL renderer loaded');
-      } catch (e) {
-        rendererRef.current = 'canvas';
-        console.warn('[PTY Terminal] WebGL not supported, falling back to canvas:', e);
-      }
-    } else {
-      rendererRef.current = 'canvas';
-      console.log('[PTY Terminal] Using canvas renderer (background image requires transparency)');
-    }
-    
+    // WebGL is intentionally disabled on the current stable xterm stack.
+    // Equal Terminal instances can share a WebGL texture atlas; clearing that
+    // atlas from one tab can corrupt glyph rendering in sibling tabs. The xterm
+    // default DOM renderer does not share that GPU atlas and is the safe fallback.
+    rendererRef.current = 'dom';
+    recordTerminalDiagnostic({
+      event: 'renderer_ready',
+      connectionHash: shortConnectionHash(connectionId),
+      renderer: 'dom',
+      active: activeRef.current,
+      cols: term.cols,
+      rows: term.rows,
+    });
+
     fitAddon.fit();
+    recordTerminalDiagnostic({
+      event: 'fit',
+      connectionHash: shortConnectionHash(connectionId),
+      renderer: 'dom',
+      active: activeRef.current,
+      cols: term.cols,
+      rows: term.rows,
+      fit: true,
+    });
 
     // Store refs
     xtermRef.current = term;
@@ -426,6 +506,7 @@ export function PtyTerminal({
     // RAF write batching state — lifted to effect scope so cleanup can cancel.
     let writeBuffer = '';
     let watermark = 0;
+    let bufferedFrameCredits = 0;
     let rafId: number | null = null;
     let zmodemController: ZmodemTransferController | null = null;
     let zmodemActive = false;
@@ -514,6 +595,20 @@ export function PtyTerminal({
 
       ws.onopen = () => {
         console.log(`[PTY Terminal] [${connectionId}] WebSocket connected`);
+        recordTerminalDiagnostic({
+          event: 'websocket_open',
+          connectionHash: shortConnectionHash(connectionId),
+          renderer: rendererRef.current,
+          active: activeRef.current,
+          cols: term.cols,
+          rows: term.rows,
+          websocketState: 'open',
+          ptyGeneration: ptyGenerationRef.current ?? undefined,
+          framesReceived: framesReceivedRef.current,
+          bytesReceived: bytesReceivedRef.current,
+          wrongConnectionFramesDropped: wrongConnectionFramesDroppedRef.current,
+          outputWatermark: outputWatermarkRef.current,
+        });
         term.writeln('\x1b[32m✓ WebSocket connected\x1b[0m');
         
         // Start PTY session
@@ -542,13 +637,10 @@ export function PtyTerminal({
       // Solution:
       // 1. Accumulate all incoming frames in a string buffer.
       // 2. Flush once per requestAnimationFrame (~60 writes/s instead of 100+).
-      // 3. Use watermark-based flow control: send Resume credits only when the
-      //    pending byte count drops below LOW_WATER, avoiding per-frame ACKs.
+      // 3. Return exactly one Resume credit per backend output frame after
+      //    xterm processes the RAF batch. This keeps the backend semaphore bounded
+      //    without shrinking the window when several frames coalesce into one write.
       // =========================================================================
-
-      /** Low watermark (bytes): below this, we grant a credit to the backend so
-       *  it can send more data. */
-      const LOW_WATER = 16 * 1024;
 
       const grantCredits = (count: number) => {
         if (ws.readyState !== WebSocket.OPEN || count <= 0) {
@@ -565,19 +657,18 @@ export function PtyTerminal({
         if (!writeBuffer) return;
 
         const data = writeBuffer;
+        const creditsToReturn = bufferedFrameCredits;
         writeBuffer = '';
+        bufferedFrameCredits = 0;
 
         // Single write per animation frame — the key optimisation.
         // Reduces term.write() calls from hundreds/s to ~60/s.
         term.write(data, () => {
-          // xterm finished processing this batch — update watermark
+          // xterm finished processing this batch — update the diagnostic byte
+          // watermark, then return one backend permit for every frame batched.
           watermark = Math.max(watermark - data.length, 0);
-          // One completed frontend write returns at most one credit, keeping
-          // outstanding permits bounded (backend spends 1 permit per frame).
-          if (watermark < LOW_WATER) {
-            // Return one permit per drained write batch (backend spends one per frame).
-            grantCredits(1);
-          }
+          outputWatermarkRef.current = watermark;
+          grantCredits(creditsToReturn);
         });
 
         // If more data arrived during the write, schedule another flush
@@ -586,9 +677,18 @@ export function PtyTerminal({
         }
       };
 
-      const enqueueOutput = (text: string) => {
+      const enqueueOutput = (text: string, creditsToReturn = 1) => {
+        // A streaming TextDecoder can retain an incomplete UTF-8 sequence and
+        // produce no text for a consumed frame. Return that frame's permit now
+        // or the two-credit pipeline can stall on a split multibyte character.
+        if (!text) {
+          grantCredits(creditsToReturn);
+          return;
+        }
         writeBuffer += text;
         watermark += text.length;
+        bufferedFrameCredits += creditsToReturn;
+        outputWatermarkRef.current = watermark;
         if (rafId === null) {
           rafId = requestAnimationFrame(flushWriteBuffer);
         }
@@ -602,7 +702,7 @@ export function PtyTerminal({
         send: sendRawInputToPty,
         writeTerminal(bytes) {
           if (bytes.length > 0) {
-            enqueueOutput(outputDecoder.decode(bytes, { stream: true }));
+            enqueueOutput(outputDecoder.decode(bytes, { stream: true }), 0);
           }
         },
         setActive(active) {
@@ -631,15 +731,29 @@ export function PtyTerminal({
         // Binary frames carry raw PTY output.
         // Format: [0x01][id_len: u16 BE][connection_id bytes][payload bytes]
         if (event.data instanceof ArrayBuffer) {
-          const data = new Uint8Array(event.data);
-          if (data.length < 3 || data[0] !== 0x01) return;
-          const idLen = (data[1] << 8) | data[2];
-          const payloadOffset = 3 + idLen;
-          if (data.length < payloadOffset) return;
-          const frameConnectionId = new TextDecoder().decode(data.subarray(3, payloadOffset));
-          if (frameConnectionId !== connectionId) return;
-          const payload = data.subarray(payloadOffset);
-          if (payload.length === 0) return;
+          const routed = routePtyOutputFrame(event.data, connectionId);
+          if (routed.wrongConnection) {
+            wrongConnectionFramesDroppedRef.current += 1;
+            recordTerminalDiagnostic({
+              event: 'wrong_connection_frame_dropped',
+              connectionHash: shortConnectionHash(connectionId),
+              renderer: rendererRef.current,
+              active: activeRef.current,
+              cols: term.cols,
+              rows: term.rows,
+              websocketState: 'open',
+              ptyGeneration: ptyGenerationRef.current ?? undefined,
+              framesReceived: framesReceivedRef.current,
+              bytesReceived: bytesReceivedRef.current,
+              wrongConnectionFramesDropped: wrongConnectionFramesDroppedRef.current,
+              outputWatermark: outputWatermarkRef.current,
+            });
+            return;
+          }
+          const payload = routed.payload;
+          if (!payload || payload.length === 0) return;
+          framesReceivedRef.current += 1;
+          bytesReceivedRef.current += routed.payloadBytes;
           onOutputRef.current?.(connectionId);
           if (zmodemController) {
             const wasActive = zmodemController.isActive();
@@ -655,7 +769,8 @@ export function PtyTerminal({
               console.error('[PTY Terminal] ZMODEM protocol error:', error);
               if (wasActive) {
                 // Never lose terminal output: recover this frame directly.
-                enqueueOutput(outputDecoder.decode(payload, { stream: true }));
+                // The active-ZMODEM path returns this frame's credit below.
+                enqueueOutput(outputDecoder.decode(payload, { stream: true }), 0);
               }
               zmodemController.abort();
             }
@@ -701,6 +816,20 @@ export function PtyTerminal({
               if (msg.connection_id === connectionId && typeof msg.generation === 'number') {
                 ptyGenerationRef.current = msg.generation;
                 console.log(`[PTY Terminal] [${connectionId}] PTY generation: ${msg.generation}`);
+                recordTerminalDiagnostic({
+                  event: 'pty_started',
+                  connectionHash: shortConnectionHash(connectionId),
+                  renderer: rendererRef.current,
+                  active: activeRef.current,
+                  cols: term.cols,
+                  rows: term.rows,
+                  websocketState: 'open',
+                  ptyGeneration: msg.generation,
+                  framesReceived: framesReceivedRef.current,
+                  bytesReceived: bytesReceivedRef.current,
+                  wrongConnectionFramesDropped: wrongConnectionFramesDroppedRef.current,
+                  outputWatermark: outputWatermarkRef.current,
+                });
                 signalReady(connectionId);
                 // Credit-based flow control: seed the pipeline with initial
                 // credits so the PTY reader can start sending immediately.
@@ -769,6 +898,21 @@ export function PtyTerminal({
           reason: event?.reason,
           wasClean: event?.wasClean,
           hadEverConnected: hasEverConnected,
+        });
+        recordTerminalDiagnostic({
+          event: 'websocket_closed',
+          connectionHash: shortConnectionHash(connectionId),
+          renderer: rendererRef.current,
+          active: activeRef.current,
+          cols: term.cols,
+          rows: term.rows,
+          websocketState: 'closed',
+          ptyGeneration: ptyGenerationRef.current ?? undefined,
+          framesReceived: framesReceivedRef.current,
+          bytesReceived: bytesReceivedRef.current,
+          wrongConnectionFramesDropped: wrongConnectionFramesDroppedRef.current,
+          reconnect: isRunning && isAutoReconnectEnabled(),
+          outputWatermark: outputWatermarkRef.current,
         });
         if (isRunning) {
           if (!isAutoReconnectEnabled()) {
@@ -893,6 +1037,21 @@ export function PtyTerminal({
           rows,
         };
         ws.send(JSON.stringify(resizeMsg));
+        recordTerminalDiagnostic({
+          event: 'resize',
+          connectionHash: shortConnectionHash(connectionId),
+          renderer: rendererRef.current,
+          active: activeRef.current,
+          cols,
+          rows,
+          websocketState: 'open',
+          ptyGeneration: ptyGenerationRef.current ?? undefined,
+          framesReceived: framesReceivedRef.current,
+          bytesReceived: bytesReceivedRef.current,
+          wrongConnectionFramesDropped: wrongConnectionFramesDroppedRef.current,
+          resize: true,
+          outputWatermark: outputWatermarkRef.current,
+        });
       }
     });
 
@@ -930,7 +1089,17 @@ export function PtyTerminal({
     // When tab becomes visible again or panel is resized, fit the terminal
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        // Only refit if the container has a reasonable size
+        // Activation repair must accept any non-zero pane size. Deeply split
+        // panes can legitimately be smaller than the normal debounced-fit gate.
+        if (
+          entry.contentRect.width > 0 &&
+          entry.contentRect.height > 0 &&
+          activeRef.current &&
+          !wasActiveRef.current
+        ) {
+          completeVisibleActivation();
+        }
+        // Ordinary resize fits keep the existing noise-reduction threshold.
         if (entry.contentRect.width > 100 && entry.contentRect.height > 100) {
           debouncedFit();
         }
@@ -958,6 +1127,8 @@ export function PtyTerminal({
       }
       writeBuffer = '';
       watermark = 0;
+      bufferedFrameCredits = 0;
+      outputWatermarkRef.current = 0;
       zmodemController?.abort();
       zmodemController = null;
       zmodemActive = false;
@@ -976,6 +1147,22 @@ export function PtyTerminal({
         ws.send(JSON.stringify(closeMsg));
         ws.close();
       }
+      recordTerminalDiagnostic({
+        event: 'terminal_dispose',
+        connectionHash: shortConnectionHash(connectionId),
+        renderer: rendererRef.current,
+        active: activeRef.current,
+        cols: term.cols,
+        rows: term.rows,
+        websocketState: ws ? ['connecting', 'open', 'closing', 'closed'][ws.readyState] ?? 'unknown' : 'none',
+        ptyGeneration: ptyGenerationRef.current ?? undefined,
+        framesReceived: framesReceivedRef.current,
+        bytesReceived: bytesReceivedRef.current,
+        wrongConnectionFramesDropped: wrongConnectionFramesDroppedRef.current,
+        dispose: true,
+        outputWatermark: outputWatermarkRef.current,
+      });
+      void flushTerminalDiagnostics();
       ptyGenerationRef.current = null;
 
       // CRITICAL: Null out WebSocket handlers to break closure reference chains.
@@ -1003,12 +1190,6 @@ export function PtyTerminal({
       }
       if (fitTimer) clearTimeout(fitTimer);
       
-      // Dispose WebGL addon FIRST so GPU textures are released before the
-      // terminal canvas is removed from the DOM.
-      if (webglAddonRef.current) {
-        try { webglAddonRef.current.dispose(); } catch (_e) { /* already disposed */ }
-        webglAddonRef.current = null;
-      }
       if (clipboardAddonRef.current) {
         try { clipboardAddonRef.current.dispose(); } catch (_e) { /* already disposed */ }
         clipboardAddonRef.current = null;
@@ -1017,9 +1198,10 @@ export function PtyTerminal({
       term.dispose();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connectionId, host, username, terminalKey, reconnectKey, sendInputToPty, sendRawInputToPty, onWorkingDirectoryChange]);
-  // NOTE: themeKey, appearanceKey, and connectionName are intentionally NOT
-  // in the deps above. Including them would tear down the WebSocket + PTY
+  }, [connectionId, host, username, reconnectKey, sendInputToPty, sendRawInputToPty, onWorkingDirectoryChange, completeVisibleActivation]);
+  // NOTE: themeKey, appearanceKey, background-image changes, and connectionName
+  // are intentionally NOT in the deps above. The DOM renderer supports transparency,
+  // so appearance changes must not tear down the WebSocket + PTY
   // session on every theme change (e.g. macOS auto Dark/Light switch), killing
   // any running remote processes. Including connectionName would do the same
   // when the user renames the connection via edit dialog — the tab title
@@ -1048,28 +1230,30 @@ export function PtyTerminal({
       return;
     }
 
-    if (wasActiveRef.current) {
-      return;
-    }
+    if (wasActiveRef.current) return;
 
-    wasActiveRef.current = true;
+    let cancelled = false;
+    let frameId = 0;
+    let attempts = 0;
+    const MAX_ACTIVATION_FRAMES = 120;
 
-    const frameId = window.requestAnimationFrame(() => {
-      const term = xtermRef.current;
-      const fitAddon = fitRef.current;
-      const container = containerRef.current;
-      if (!term || !fitAddon || !container) return;
-      if (container.offsetWidth <= 0 || container.offsetHeight <= 0) return;
-
-      fitAddon.fit();
-      if (term.rows > 0) {
-        term.refresh(0, term.rows - 1);
+    const tryActivate = () => {
+      if (cancelled) return;
+      if (completeVisibleActivation()) return;
+      attempts += 1;
+      if (attempts < MAX_ACTIVATION_FRAMES) {
+        frameId = window.requestAnimationFrame(tryActivate);
       }
-      term.focus();
-    });
+      // If the retry budget expires while the pane remains 0x0, deliberately
+      // leave wasActiveRef false. ResizeObserver is the late-visibility backstop.
+    };
 
-    return () => window.cancelAnimationFrame(frameId);
-  }, [isActive]);
+    frameId = window.requestAnimationFrame(tryActivate);
+    return () => {
+      cancelled = true;
+      if (frameId) window.cancelAnimationFrame(frameId);
+    };
+  }, [isActive, completeVisibleActivation]);
 
   // Context menu handlers
   const handleCopy = React.useCallback(() => {

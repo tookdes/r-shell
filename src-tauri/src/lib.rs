@@ -11,6 +11,7 @@ mod rdp_client;
 mod secrets;
 mod sftp_client;
 mod ssh;
+mod terminal_diagnostics;
 mod vnc_client;
 mod websocket_server;
 
@@ -245,13 +246,16 @@ fn init_logging() {
         .map(|base| base.join("com.aiden.r-shell").join("logs"))
         .unwrap_or_else(std::env::temp_dir);
     if let Err(e) = std::fs::create_dir_all(&log_dir) {
-        eprintln!("[r-shell] failed to create log dir {}: {}", log_dir.display(), e);
+        eprintln!(
+            "[r-shell] failed to create log dir {}: {}",
+            log_dir.display(),
+            e
+        );
     }
     let file_layer = tracing_subscriber::fmt::layer()
         .with_writer(tracing_appender::rolling::daily(&log_dir, "r-shell.log"))
         .with_ansi(false);
-    let stderr_layer = tracing_subscriber::fmt::layer()
-        .with_writer(std::io::stderr);
+    let stderr_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
     tracing_subscriber::registry()
         .with(file_layer)
         .with(stderr_layer)
@@ -322,6 +326,7 @@ pub fn run() {
             commands::known_hosts_forget,
             commands::secrets_encrypt,
             commands::secrets_decrypt,
+            terminal_diagnostics::append_terminal_diagnostics,
             commands::abort_connection_transfers,
             commands::ssh_execute_command,
             commands::ssh_tab_complete,

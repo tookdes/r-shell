@@ -6,7 +6,7 @@
  * proxy was never persisted to connection storage.
  */
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ConnectionDialog } from '../components/connection-dialog';
 import { ConnectionStorageManager } from '../lib/connection-storage';
 
@@ -74,10 +74,23 @@ beforeEach(() => {
   localStorage.clear();
   localStorage.setItem('sshClientSettings', JSON.stringify({ savePasswords: true }));
   vi.clearAllMocks();
+  mockInvoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+    if (command === 'secrets_encrypt') {
+      return `cipher:${String(args?.plaintext ?? '')}`;
+    }
+    if (command === 'secrets_decrypt') {
+      const ciphertext = String(args?.ciphertext ?? '');
+      return ciphertext.startsWith('cipher:') ? ciphertext.slice('cipher:'.length) : ciphertext;
+    }
+    if (command === 'ssh_connect') {
+      return { success: false, error: 'connection refused' };
+    }
+    return undefined;
+  });
 });
 
 describe('ConnectionDialog proxy persistence', () => {
-  it('persists proxy config when the edited connection is saved', () => {
+  it('persists proxy config when the edited connection is saved', async () => {
     // Seed a connection without proxy (realistic: proxy was never stored before)
     ConnectionStorageManager.saveConnectionWithId('conn-1', baseConnection);
 
@@ -87,17 +100,19 @@ describe('ConnectionDialog proxy persistence', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
+    await waitFor(() => {
+      expect(ConnectionStorageManager.getConnection('conn-1')?.proxyType).toBe('http');
+    });
+
     const stored = ConnectionStorageManager.getConnection('conn-1');
-    expect(stored?.proxyType).toBe('http');
     expect(stored?.proxyHost).toBe('proxy.example.com');
     expect(stored?.proxyPort).toBe(3128);
     expect(stored?.proxyUsername).toBe('proxyuser');
-    expect(stored?.proxyPassword).toBe('proxypass');
+    expect(stored?.password).toBe('enc:v1:cipher:secret');
+    expect(stored?.proxyPassword).toBe('enc:v1:cipher:proxypass');
   });
 
   it('keeps proxy config when a new connection fails to connect', async () => {
-    mockInvoke.mockResolvedValueOnce({ success: false, error: 'connection refused' });
-
     renderDialog();
 
     // Connection tab: fill the required SSH fields
@@ -151,7 +166,8 @@ describe('ConnectionDialog proxy persistence', () => {
     expect(connections[0].proxyHost).toBe('proxy.example.com');
     expect(connections[0].proxyPort).toBe(3128);
     expect(connections[0].proxyUsername).toBe('proxyuser');
-    expect(connections[0].proxyPassword).toBe('proxypass');
+    expect(connections[0].password).toBe('enc:v1:cipher:secret');
+    expect(connections[0].proxyPassword).toBe('enc:v1:cipher:proxypass');
   });
 
   it('shows saved proxy values in the proxy tab when editing', () => {
