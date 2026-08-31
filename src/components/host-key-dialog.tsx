@@ -75,7 +75,7 @@ export function HostKeyDialog() {
         if (!open) void respond(false);
       }}
     >
-      <AlertDialogContent className="!inset-0 !m-auto max-w-lg">
+      <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>
             {prompt?.changed ? t('hostKey.titleChanged') : t('hostKey.title')}
