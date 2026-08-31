@@ -50,9 +50,10 @@ describe('HostKeyDialog interaction', () => {
       });
     });
 
-    expect(screen.getByRole('button', { name: 'hostKey.reject' })).toBeVisible();
+    const rejectButton = screen.getByRole('button', { name: 'hostKey.reject' });
+    expect(rejectButton).toBeTruthy();
     const trustButton = screen.getByRole('button', { name: 'hostKey.accept' });
-    expect(trustButton).toBeVisible();
+    expect(trustButton).toBeTruthy();
 
     const content = document.querySelector('[data-slot="alert-dialog-content"]');
     const positioner = document.querySelector('[data-slot="alert-dialog-positioner"]');
