@@ -104,11 +104,9 @@ export function HostKeyDialog() {
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>{t('hostKey.reject')}</AlertDialogCancel>
-          {!prompt?.changed && (
-            <AlertDialogAction onClick={() => void respond(true)}>
-              {t('hostKey.accept')}
-            </AlertDialogAction>
-          )}
+          <AlertDialogAction onClick={() => void respond(true)}>
+            {prompt?.changed ? t('connectionDialog.button.updateAndConnect') : t('hostKey.accept')}
+          </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

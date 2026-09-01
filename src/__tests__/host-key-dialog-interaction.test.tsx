@@ -75,4 +75,38 @@ describe('HostKeyDialog interaction', () => {
       });
     });
   });
+
+  it('lets the user explicitly update and connect when the host key changed', async () => {
+    render(<HostKeyDialog />);
+
+    await waitFor(() => expect(mocks.listener).toBeTypeOf('function'));
+
+    act(() => {
+      mocks.listener?.({
+        payload: {
+          prompt_id: 'prompt-changed',
+          host: '100.72.10.4',
+          port: 22,
+          algorithm: 'ssh-ed25519',
+          fingerprint: 'SHA256:Lgb4XZMt+20PL7q/+QAs5xlJyp+rSvXZ1zPkataZqQ4',
+          changed: true,
+        },
+      });
+    });
+
+    expect(screen.getByRole('button', { name: 'hostKey.reject' })).toBeTruthy();
+    const updateButton = screen.getByRole('button', {
+      name: 'connectionDialog.button.updateAndConnect',
+    });
+    expect(updateButton).toBeTruthy();
+
+    fireEvent.click(updateButton);
+
+    await waitFor(() => {
+      expect(mocks.invoke).toHaveBeenCalledWith('host_key_respond', {
+        promptId: 'prompt-changed',
+        accept: true,
+      });
+    });
+  });
 });
