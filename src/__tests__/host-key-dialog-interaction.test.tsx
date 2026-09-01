@@ -56,10 +56,15 @@ describe('HostKeyDialog interaction', () => {
     expect(trustButton).toBeTruthy();
 
     const content = document.querySelector('[data-slot="alert-dialog-content"]');
+    const viewport = document.querySelector('[data-slot="alert-dialog-viewport"]');
     const positioner = document.querySelector('[data-slot="alert-dialog-positioner"]');
     expect(positioner?.getAttribute('class')).toContain('items-center');
     expect(positioner?.getAttribute('class')).toContain('justify-center');
-    expect(content?.getAttribute('class')).toContain('max-h-[calc(100vh-2rem)]');
+    expect(positioner?.getAttribute('class')).toContain('overflow-hidden');
+    expect(viewport?.getAttribute('class')).toContain('max-h-[calc(100dvh-2rem)]');
+    expect(viewport?.getAttribute('class')).toContain('max-w-[calc(100dvw-2rem)]');
+    expect(viewport?.getAttribute('class')).toContain('overflow-auto');
+    expect(content?.getAttribute('class')).toContain('max-h-[calc(100dvh-2rem)]');
 
     fireEvent.click(trustButton);
 

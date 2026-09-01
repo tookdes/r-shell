@@ -53,17 +53,22 @@ function AlertDialogContent({
       <AlertDialogOverlay />
       <div
         data-slot="alert-dialog-positioner"
-        className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-4"
+        className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center overflow-hidden p-4"
       >
-        <AlertDialogPrimitive.Content
-          data-slot="alert-dialog-content"
-          className={cn(
-            "bg-background pointer-events-auto z-50 grid h-fit max-h-[calc(100vh-2rem)] w-full max-w-[calc(100vw-2rem)] gap-4 overflow-y-auto overscroll-contain rounded-lg border border-border p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 sm:max-w-lg",
-            className,
-            "!relative !inset-auto !m-0 !translate-x-0 !translate-y-0",
-          )}
-          {...props}
-        />
+        <div
+          data-slot="alert-dialog-viewport"
+          className="pointer-events-auto flex max-h-[calc(100dvh-2rem)] max-w-[calc(100dvw-2rem)] items-center justify-center overflow-auto overscroll-contain"
+        >
+          <AlertDialogPrimitive.Content
+            data-slot="alert-dialog-content"
+            className={cn(
+              "bg-background pointer-events-auto z-50 grid h-fit max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100dvw-2rem)] gap-4 overflow-y-auto overscroll-contain rounded-lg border border-border p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 sm:max-w-lg",
+              className,
+              "!relative !inset-auto !m-0 !translate-x-0 !translate-y-0",
+            )}
+            {...props}
+          />
+        </div>
       </div>
     </AlertDialogPortal>
   );

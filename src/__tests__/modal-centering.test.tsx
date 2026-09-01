@@ -13,8 +13,13 @@ import {
   AlertDialogTitle,
 } from '../components/ui/alert-dialog';
 
-function expectViewportCentered(positioner: Element | null, content: Element | null) {
+function expectViewportContainedAndCentered(
+  positioner: Element | null,
+  viewport: Element | null,
+  content: Element | null,
+) {
   expect(positioner).not.toBeNull();
+  expect(viewport).not.toBeNull();
   expect(content).not.toBeNull();
 
   const positionerClass = positioner?.getAttribute('class') ?? '';
@@ -22,12 +27,19 @@ function expectViewportCentered(positioner: Element | null, content: Element | n
   expect(positionerClass).toContain('inset-0');
   expect(positionerClass).toContain('items-center');
   expect(positionerClass).toContain('justify-center');
+  expect(positionerClass).toContain('overflow-hidden');
   expect(positionerClass).toContain('p-4');
 
+  const viewportClass = viewport?.getAttribute('class') ?? '';
+  expect(viewportClass).toContain('max-h-[calc(100dvh-2rem)]');
+  expect(viewportClass).toContain('max-w-[calc(100dvw-2rem)]');
+  expect(viewportClass).toContain('overflow-auto');
+  expect(viewportClass).toContain('overscroll-contain');
+
   const contentClass = content?.getAttribute('class') ?? '';
-  expect(contentClass).toContain('max-h-[calc(100vh-2rem)]');
+  expect(contentClass).toContain('max-h-[calc(100dvh-2rem)]');
   expect(contentClass).toContain('overflow-y-auto');
-  expect(contentClass).toContain('max-w-[calc(100vw-2rem)]');
+  expect(contentClass).toContain('max-w-[calc(100dvw-2rem)]');
   expect(contentClass).toContain('!relative');
   expect(contentClass).toContain('!inset-auto');
   expect(contentClass).toContain('!m-0');
@@ -49,8 +61,9 @@ describe('modal viewport positioning', () => {
       </Dialog>,
     );
 
-    expectViewportCentered(
+    expectViewportContainedAndCentered(
       document.querySelector('[data-slot="dialog-positioner"]'),
+      document.querySelector('[data-slot="dialog-viewport"]'),
       document.querySelector('[data-slot="dialog-content"]'),
     );
   });
@@ -65,8 +78,9 @@ describe('modal viewport positioning', () => {
       </AlertDialog>,
     );
 
-    expectViewportCentered(
+    expectViewportContainedAndCentered(
       document.querySelector('[data-slot="alert-dialog-positioner"]'),
+      document.querySelector('[data-slot="alert-dialog-viewport"]'),
       document.querySelector('[data-slot="alert-dialog-content"]'),
     );
   });
@@ -89,12 +103,14 @@ describe('modal viewport positioning', () => {
       </>,
     );
 
-    expectViewportCentered(
+    expectViewportContainedAndCentered(
       document.querySelector('[data-slot="dialog-positioner"]'),
+      document.querySelector('[data-slot="dialog-viewport"]'),
       document.querySelector('[data-slot="dialog-content"]'),
     );
-    expectViewportCentered(
+    expectViewportContainedAndCentered(
       document.querySelector('[data-slot="alert-dialog-positioner"]'),
+      document.querySelector('[data-slot="alert-dialog-viewport"]'),
       document.querySelector('[data-slot="alert-dialog-content"]'),
     );
   });
