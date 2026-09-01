@@ -1,0 +1,102 @@
+name: Upstream sync review
+
+on:
+  push:
+    branches:
+      - review/upstream-sync-2026-08-22
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upstream-sync-review
+  cancel-in-progress: true
+
+jobs:
+  review-and-fix:
+    if: ${{ github.event_name == 'pull_request' || !contains(github.event.head_commit.message, '[upstream-review-bot]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: review/upstream-sync-2026-08-22
+          fetch-depth: 0
+
+      - name: Restore encrypted Save path
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/components/connection-dialog.tsx')
+          s = p.read_text()
+          old = '''    const secretsForStorage = {
+      password: config.password,
+      passphrase: config.passphrase,
+      privateKeyData: config.privateKeyData,
+      proxyPassword: config.proxyPassword,
+    };'''
+          new = '''    const secretsForStorage = await encryptConnectionSecrets({
+      password: config.password,
+      passphrase: config.passphrase,
+      privateKeyData: config.privateKeyData,
+      proxyPassword: config.proxyPassword,
+    });'''
+          if old not in s:
+              raise SystemExit('plaintext handleSave pattern not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+
+      - name: Probe upstream cherry-picks
+        run: |
+          git remote add upstream https://github.com/GOODBOY008/r-shell.git || true
+          git fetch upstream main
+          : > /tmp/upstream-cherry-pick-report.txt
+          for sha in \
+            397e22253b0d778bc216ad97ac294776fffd2e47 \
+            43a78205c9d6a3f69bb1137046972a55b4c8acf7 \
+            c2f9475b2a65ff8926b6ca0288e56d4ef83e4521 \
+            8a14da2e292583ae46c89051899566fb239014d9 \
+            adb0d752fac2e1ba41aea070a06e43ab2f24475b
+          do
+            git reset --hard HEAD
+            if git cherry-pick --no-commit "$sha" >/tmp/cherry.out 2>&1; then
+              echo "$sha CLEAN" >> /tmp/upstream-cherry-pick-report.txt
+              git reset --hard HEAD
+            else
+              echo "$sha CONFLICT" >> /tmp/upstream-cherry-pick-report.txt
+              git diff --name-only --diff-filter=U | sed 's/^/  /' >> /tmp/upstream-cherry-pick-report.txt
+              git cherry-pick --abort >/dev/null 2>&1 || true
+              git reset --hard HEAD
+            fi
+          done
+
+      - name: Re-apply security fix and commit report
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/components/connection-dialog.tsx')
+          s = p.read_text()
+          old = '''    const secretsForStorage = {
+      password: config.password,
+      passphrase: config.passphrase,
+      privateKeyData: config.privateKeyData,
+      proxyPassword: config.proxyPassword,
+    };'''
+          new = '''    const secretsForStorage = await encryptConnectionSecrets({
+      password: config.password,
+      passphrase: config.passphrase,
+      privateKeyData: config.privateKeyData,
+      proxyPassword: config.proxyPassword,
+    });'''
+          if old not in s:
+              raise SystemExit('plaintext handleSave pattern not found after probe reset')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          cp /tmp/upstream-cherry-pick-report.txt upstream-cherry-pick-report.txt
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/components/connection-dialog.tsx upstream-cherry-pick-report.txt
+          git commit -m "fix: restore encrypted connection saves and probe upstream [upstream-review-bot]"
+          git push origin HEAD:review/upstream-sync-2026-08-22
