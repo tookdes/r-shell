@@ -1,9 +1,9 @@
 //! TOFU-style host key store (inspired by meatshell's known_hosts module).
 //!
 //! Policy when verification is enabled:
-//!   - unknown host  -> accept and remember (OpenSSH accept-new style)
+//!   - unknown host  -> prompt; accept and remember when confirmed
 //!   - known + match -> accept silently
-//!   - known + differ -> reject (possible MITM); user must clear the entry
+//!   - known + differ -> prompt; replace only after explicit user confirmation
 //!
 //! File format (one entry per line, next to app data):
 //!   host:port algorithm SHA256:base64fingerprint
@@ -180,7 +180,7 @@ pub fn check_or_remember(host: &str, port: u16, key: &PublicKey, enabled: bool) 
 }
 
 /// Interactive TOFU:
-/// Match -> accept; Unknown -> prompt and remember; Changed -> notify and reject.
+/// Match -> accept; Unknown -> prompt and remember; Changed -> prompt and replace only if confirmed.
 pub async fn check_or_prompt(host: &str, port: u16, key: &PublicKey, enabled: bool) -> bool {
     if !enabled {
         return true;
@@ -200,10 +200,15 @@ pub async fn check_or_prompt(host: &str, port: u16, key: &PublicKey, enabled: bo
         }
         HostKeyStatus::Changed => {
             tracing::error!("HOST KEY CHANGED for {host}:{port} — presented {fp} (possible MITM)");
-            // Notify the user, but never accept or replace a changed key in-band.
-            // The stored entry must be explicitly removed before reconnecting.
-            let _ = crate::host_key_prompt::prompt_user(host, port, &algo, &fp, true).await;
-            false
+            let accepted = crate::host_key_prompt::prompt_user(host, port, &algo, &fp, true).await;
+            if accepted {
+                if let Err(e) = remember(host, port, key) {
+                    tracing::warn!(
+                        "accepted changed host key but failed to update known_hosts: {e}"
+                    );
+                }
+            }
+            accepted
         }
     }
 }
