@@ -190,8 +190,7 @@ pub async fn check_or_prompt(host: &str, port: u16, key: &PublicKey, enabled: bo
     match verify(host, port, key) {
         HostKeyStatus::Match => true,
         HostKeyStatus::Unknown => {
-            let accepted =
-                crate::host_key_prompt::prompt_user(host, port, &algo, &fp, false).await;
+            let accepted = crate::host_key_prompt::prompt_user(host, port, &algo, &fp, false).await;
             if accepted {
                 if let Err(e) = remember(host, port, key) {
                     tracing::warn!("accepted host key but failed to persist known_hosts: {e}");
@@ -201,11 +200,12 @@ pub async fn check_or_prompt(host: &str, port: u16, key: &PublicKey, enabled: bo
         }
         HostKeyStatus::Changed => {
             tracing::error!("HOST KEY CHANGED for {host}:{port} — presented {fp} (possible MITM)");
-            let accepted =
-                crate::host_key_prompt::prompt_user(host, port, &algo, &fp, true).await;
+            let accepted = crate::host_key_prompt::prompt_user(host, port, &algo, &fp, true).await;
             if accepted {
                 if let Err(e) = remember(host, port, key) {
-                    tracing::warn!("accepted changed host key but failed to update known_hosts: {e}");
+                    tracing::warn!(
+                        "accepted changed host key but failed to update known_hosts: {e}"
+                    );
                 }
             }
             accepted
