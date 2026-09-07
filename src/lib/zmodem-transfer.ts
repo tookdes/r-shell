@@ -153,9 +153,11 @@ export async function createZmodemTransferController(
 ): Promise<ZmodemTransferController> {
   const zmodem = await import('zmodem.js');
   let activeSession: Session | null = null;
-  let disposed = false;
 
-  const finish = () => {
+  // Session callbacks can arrive after an abort. Never let a stale session
+  // clear the state of a newer transfer that has already started.
+  const finish = (session: Session) => {
+    if (activeSession !== session) return;
     activeSession = null;
     callbacks.setActive(false);
   };
@@ -167,7 +169,7 @@ export async function createZmodemTransferController(
       // The peer may already have ended the session.
     }
     callbacks.notifyError(i18n.t('ptyTerminal.zmodem.failed', { error: errorMessage(error) }));
-    finish();
+    finish(session);
   };
 
   const handleReceiveSession = (session: Session) => {
@@ -196,7 +198,7 @@ export async function createZmodemTransferController(
         if (received > 0) {
           callbacks.notifySuccess(i18n.t('ptyTerminal.zmodem.downloadComplete', { count: received }));
         }
-        finish();
+        finish(session);
       });
     });
     void session.start().catch((error: unknown) => fail(session, error));
@@ -208,7 +210,7 @@ export async function createZmodemTransferController(
     session.on('session_end', () => {
       if (sessionEnded) return;
       sessionEnded = true;
-      finish();
+      finish(session);
     });
     void selectAndSendFiles(session)
       .then(({ sent, cancelled }) => {
@@ -241,7 +243,7 @@ export async function createZmodemTransferController(
       }
     },
     on_detect(detection: Detection) {
-      if (disposed || activeSession) {
+      if (activeSession) {
         detection.deny();
         return;
       }
@@ -268,11 +270,10 @@ export async function createZmodemTransferController(
     },
     abort(silent = true) {
       const session = activeSession;
-      disposed = silent;
       try {
         if (session && !session.has_ended()) session.abort();
       } catch (_error) {
-        // Best-effort cleanup during socket/component teardown.
+        // Best-effort cleanup during protocol recovery or socket/component teardown.
       }
       activeSession = null;
       callbacks.setActive(false);
