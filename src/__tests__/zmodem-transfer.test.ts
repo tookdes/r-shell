@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { zmodemFilename } from '../lib/zmodem-transfer';
 
 
@@ -53,6 +53,35 @@ describe('createZmodemTransferController output routing', () => {
 
   let controller: import('../lib/zmodem-transfer').ZmodemTransferController;
 
+  function createReceiveSession() {
+    let sessionEnd: (() => void) | undefined;
+    const session = {
+      on: vi.fn((event: string, handler: () => void) => {
+        if (event === 'session_end') sessionEnd = handler;
+      }),
+      start: vi.fn().mockResolvedValue(undefined),
+      has_ended: vi.fn().mockReturnValue(false),
+      abort: vi.fn(),
+    };
+    return {
+      session,
+      end() {
+        sessionEnd?.();
+      },
+    };
+  }
+
+  function detectReceive(session: ReturnType<typeof createReceiveSession>['session']) {
+    const deny = vi.fn();
+    onDetectCapture?.({
+      get_session_role: () => 'receive',
+      confirm: () => session,
+      deny,
+      is_valid: () => true,
+    });
+    return deny;
+  }
+
   it('does not echo terminal output while no ZMODEM session is active', () => {
     controller.consume(new Uint8Array([0x1b, 0x5b, 0x48, 0x61]));
     expect(writeTerminal).not.toHaveBeenCalled();
@@ -79,17 +108,48 @@ describe('createZmodemTransferController output routing', () => {
     expect(writeTerminal).toHaveBeenCalled();
     expect(Array.from(writeTerminal.mock.calls[0][0] as Uint8Array)).toEqual([0x1b, 0x5b, 0x48, 0x62]);
   });
+
+  it('can start another ZMODEM session after a silent abort', () => {
+    const first = createReceiveSession();
+    expect(detectReceive(first.session)).not.toHaveBeenCalled();
+    expect(controller.isActive()).toBe(true);
+
+    controller.abort();
+    expect(first.session.abort).toHaveBeenCalledOnce();
+    expect(controller.isActive()).toBe(false);
+
+    const second = createReceiveSession();
+    const secondDeny = detectReceive(second.session);
+    expect(secondDeny).not.toHaveBeenCalled();
+    expect(controller.isActive()).toBe(true);
+  });
+
+  it('ignores a stale session_end callback after a newer session starts', async () => {
+    const first = createReceiveSession();
+    detectReceive(first.session);
+    controller.abort();
+
+    const second = createReceiveSession();
+    detectReceive(second.session);
+    expect(controller.isActive()).toBe(true);
+
+    first.end();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(controller.isActive()).toBe(true);
+  });
 });
 
 describe('ZMODEM filenames', () => {
   it('extracts a leaf name from Windows and Unix paths', () => {
-    expect(zmodemFilename.basename(String.raw`C:\temp\archive.tar.gz`)).toBe('archive.tar.gz');
+    expect(zmodemFilename.basename(String.raw`C:\\temp\\archive.tar.gz`)).toBe('archive.tar.gz');
     expect(zmodemFilename.basename('/tmp/archive.tar.gz')).toBe('archive.tar.gz');
   });
 
   it('prevents a remote sender from choosing local directories', () => {
     expect(zmodemFilename.safeReceived('../../secret.txt')).toBe('secret.txt');
-    expect(zmodemFilename.safeReceived(String.raw`..\..\secret.txt`)).toBe('secret.txt');
+    expect(zmodemFilename.safeReceived(String.raw`..\\..\\secret.txt`)).toBe('secret.txt');
   });
 
   it('replaces characters that are invalid in Windows filenames', () => {
