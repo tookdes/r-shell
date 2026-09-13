@@ -44,6 +44,7 @@ import type { TerminalTab } from './lib/terminal-group-types';
 import { Toaster } from './components/ui/sonner';
 import { toast } from 'sonner';
 import { dispatchTerminalCommand, type TerminalCommand } from './lib/terminal-commands';
+import { announce } from './lib/live-announcer';
 import { backupConnectionsNow, restoreConnectionsIfEmpty } from './lib/connection-backup';
 
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from './components/ui/resizable';
@@ -280,6 +281,16 @@ function AppContent() {
   // Keyboard shortcuts: layout + split view
   const splitViewShortcuts = useMemo(() => {
     const groupIds = Object.keys(state.groups);
+    const moveActiveTab = (delta: -1 | 1) => {
+      if (!activeGroup?.activeTabId || activeGroup.tabs.length < 2) return;
+      const fromIndex = activeGroup.tabs.findIndex((tab) => tab.id === activeGroup.activeTabId);
+      if (fromIndex < 0) return;
+      const toIndex = fromIndex + delta;
+      if (toIndex < 0 || toIndex >= activeGroup.tabs.length) return;
+      dispatch({ type: 'REORDER_TAB', groupId: activeGroup.id, fromIndex, toIndex });
+      const tabName = activeGroup.tabs[fromIndex]?.name ?? 'Tab';
+      announce(`${tabName} moved to position ${toIndex + 1} of ${activeGroup.tabs.length}`);
+    };
     return createSplitViewShortcuts(
       {
         splitRight: () => {
@@ -316,6 +327,8 @@ function AppContent() {
             dispatch({ type: 'ACTIVATE_TAB', groupId: activeGroup.id, tabId: activeGroup.tabs[prevIndex].id });
           }
         },
+        moveTabLeft: () => moveActiveTab(-1),
+        moveTabRight: () => moveActiveTab(1),
       },
       keyboardShortcutSettings,
     );
@@ -376,6 +389,8 @@ function AppContent() {
     const CONNECT_TIMEOUT_MS = Math.max(5, transportSettings.connectionTimeout) * 1000;
     const OVERALL_RESTORE_TIMEOUT_MS = Math.max(60_000, CONNECT_TIMEOUT_MS * 4);
     const restoreCancelledRef = restoreCancelRef;
+    let restoreTimedOut = false;
+    let currentPendingSshConnectionId: string | null = null;
 
     const restoreConnections = async () => {
       restoreCancelledRef.current = false;
@@ -569,6 +584,7 @@ function AppContent() {
             console.log(`✓ Restored ${connectionData.protocol} connection: ${connectionData.name}${tabAlreadyExists ? ' (reconnected existing tab)' : ''}`);
           } else {
             // SSH restoration (existing behavior)
+            currentPendingSshConnectionId = activeConn.connectionId;
             const result = await withTimeout(
               invoke<{ success: boolean; error?: string }>(
                 'ssh_connect',
@@ -596,6 +612,7 @@ function AppContent() {
               CONNECT_TIMEOUT_MS,
               `ssh_connect ${connectionData.name}`,
             );
+            currentPendingSshConnectionId = null;
 
             if (result.success) {
               if (!activeConn.originalConnectionId) {
@@ -633,6 +650,9 @@ function AppContent() {
             }
           }
         } catch (error) {
+          if (currentPendingSshConnectionId === activeConn.connectionId) {
+            currentPendingSshConnectionId = null;
+          }
           console.error(`Error restoring connection ${connectionData.name}:`, error);
           if (tabAlreadyExists) {
             dispatch({ type: 'UPDATE_TAB_STATUS', tabId: activeConn.connectionId, status: 'disconnected' });
@@ -641,7 +661,10 @@ function AppContent() {
         }
       }
 
-      if (restoredCount > 0) {
+      if (restoreCancelledRef.current || restoreTimedOut) {
+        // Cancellation/timeout already owns the user-facing outcome. Keep
+        // the persisted active list so the user can retry next launch.
+      } else if (restoredCount > 0) {
         toast.success(t('app.connectionsRestored'), {
           description: failedCount > 0
             ? t('app.connectionsRestoredDesc', { restoredCount, failedCount })
@@ -661,10 +684,24 @@ function AppContent() {
     };
 
     withTimeout(restoreConnections(), OVERALL_RESTORE_TIMEOUT_MS, 'Session restore').catch((err) => {
-      console.error('Session restore timed out:', err);
-      toast.error(t('app.restoreTimedOut'), {
-        description: t('app.restoreTimedOutDesc'),
-      });
+      const isOverallTimeout = err instanceof Error && err.message.startsWith('Timeout: Session restore');
+      if (isOverallTimeout) {
+        restoreTimedOut = true;
+        restoreCancelledRef.current = true;
+        const pendingSshId = currentPendingSshConnectionId;
+        currentPendingSshConnectionId = null;
+        if (pendingSshId) {
+          void invoke('ssh_cancel_connect', { connection_id: pendingSshId }).catch((cancelError) => {
+            console.warn(`Failed to cancel timed-out restore ${pendingSshId}:`, cancelError);
+          });
+        }
+        console.error('Session restore timed out:', err);
+        toast.error(t('app.restoreTimedOut'), {
+          description: t('app.restoreTimedOutDesc'),
+        });
+      } else {
+        console.error('Session restore failed:', err);
+      }
       setCurrentRestoreTarget(null);
       setIsRestoring(false);
       setRestoringProgress({ current: 0, total: 0 });

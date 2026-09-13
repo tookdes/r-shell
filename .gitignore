@@ -15,9 +15,8 @@ target
 .qoder
 test-results/
 
-# Locally packaged release binaries
-release/**/*.exe
-release/**/*.msi
+# Locally packaged release artifacts
+/release/
 
 # Editor directories and files
 .vscode/*

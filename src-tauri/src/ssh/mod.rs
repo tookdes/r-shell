@@ -298,37 +298,29 @@ pub fn load_private_key(
             .map_err(|e| anyhow::anyhow!("Failed to parse inline private key: {}", e));
     }
 
-    let key_path = key_path
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("Private key path or key content is required"))?;
+    let configured_key_path = key_path.map(str::trim).filter(|s| !s.is_empty());
 
-    if key_path.contains("BEGIN") && key_path.contains("PRIVATE KEY") {
-        let normalized = key_path.replace("\r\n", "\n");
+    // Compatibility: older profiles may contain pasted PEM text in key_path.
+    if let Some(pasted_key) =
+        configured_key_path.filter(|value| value.contains("BEGIN") && value.contains("PRIVATE KEY"))
+    {
+        let normalized = pasted_key.replace("\r\n", "\n");
         return decode_secret_key(&normalized, passphrase)
             .map_err(|e| anyhow::anyhow!("Failed to parse pasted private key: {}", e));
     }
 
-    let expanded_path = if key_path.starts_with("~/") || key_path.starts_with("~\\") {
-        if let Some(home) = dirs::home_dir() {
-            let home_str = home.to_string_lossy();
-            key_path.replacen('~', &home_str, 1)
-        } else {
-            key_path.to_string()
-        }
-    } else {
-        key_path.to_string()
-    };
+    let expanded_path = crate::os_keypath::resolve_private_key_path(configured_key_path)
+        .map_err(anyhow::Error::msg)?;
 
     if !std::path::Path::new(&expanded_path).exists() {
         return Err(anyhow::anyhow!(
             "SSH key file not found: {}. Please check the file path and try again.",
-            key_path
+            expanded_path
         ));
     }
 
     let key_content = std::fs::read_to_string(&expanded_path)
-        .map_err(|e| anyhow::anyhow!("Failed to read SSH key file {}: {}", key_path, e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to read SSH key file {}: {}", expanded_path, e))?;
     let key_content = key_content.replace("\r\n", "\n");
     decode_secret_key(&key_content, passphrase).map_err(|e| {
         if e.to_string().contains("encrypted") || e.to_string().contains("passphrase") {
@@ -338,7 +330,7 @@ pub fn load_private_key(
         } else {
             anyhow::anyhow!(
                 "Failed to load SSH key from {}: {}. Ensure the file is a valid SSH private key.",
-                key_path, e
+                expanded_path, e
             )
         }
     })
@@ -440,10 +432,21 @@ impl SshClient {
             })?;
 
         let authenticated = match &config.auth_method {
-            AuthMethod::Password { password } => ssh_session
-                .authenticate_password(&config.username, password)
-                .await
-                .map_err(|e| anyhow::anyhow!("Password authentication failed: {}", e))?,
+            AuthMethod::Password { password } => {
+                let mut authenticated = ssh_session
+                    .authenticate_password(&config.username, password)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Password authentication failed: {}", e))?;
+                if !authenticated && password.is_empty() {
+                    authenticated = ssh_session
+                        .authenticate_none(&config.username)
+                        .await
+                        .map_err(|e| {
+                            anyhow::anyhow!("Passwordless authentication failed: {}", e)
+                        })?;
+                }
+                authenticated
+            }
             AuthMethod::PublicKey {
                 key_path: _key_path,
                 key_data: _key_data,

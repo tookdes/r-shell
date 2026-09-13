@@ -33,6 +33,8 @@ export const DEFAULT_APP_KEYBOARD_SHORTCUTS = {
   closeSession: 'Ctrl+W',
   nextTab: 'Ctrl+Tab',
   previousTab: 'Ctrl+Shift+Tab',
+  moveTabLeft: 'Ctrl+Shift+PageUp',
+  moveTabRight: 'Ctrl+Shift+PageDown',
 } as const;
 
 export const DEFAULT_LAYOUT_SHORTCUTS = {
@@ -362,6 +364,8 @@ export const createSplitViewShortcuts = (actions: {
   closeTab: () => void;
   nextTab: () => void;
   prevTab: () => void;
+  moveTabLeft: () => void;
+  moveTabRight: () => void;
 }, bindings: Partial<SplitViewShortcutBindings> = {}): KeyboardShortcut[] => {
   const resolvedBindings: SplitViewShortcutBindings = {
     ...DEFAULT_SPLIT_VIEW_SHORTCUTS,
@@ -412,6 +416,18 @@ export const createSplitViewShortcuts = (actions: {
       DEFAULT_SPLIT_VIEW_SHORTCUTS.prevTab,
       actions.prevTab,
       'Previous tab in group',
+    ),
+    createConfiguredShortcut(
+      DEFAULT_APP_KEYBOARD_SHORTCUTS.moveTabLeft,
+      DEFAULT_APP_KEYBOARD_SHORTCUTS.moveTabLeft,
+      actions.moveTabLeft,
+      'Move active tab left',
+    ),
+    createConfiguredShortcut(
+      DEFAULT_APP_KEYBOARD_SHORTCUTS.moveTabRight,
+      DEFAULT_APP_KEYBOARD_SHORTCUTS.moveTabRight,
+      actions.moveTabRight,
+      'Move active tab right',
     ),
   ];
 };

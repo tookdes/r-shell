@@ -318,20 +318,40 @@ impl ConnectionManager {
         sessions.get(connection_id).map(|s| s.cancel.clone())
     }
 
-    /// Resize PTY terminal (send window-change to remote SSH channel)
+    /// Resize PTY terminal (send window-change to remote SSH channel).
+    ///
+    /// StartPty inserts the session only after SSH channel setup has completed.
+    /// A resize can race that startup window, especially after a panel/layout fit.
+    /// Retry only while the session is absent so the latest terminal geometry is
+    /// not silently lost; once a session exists, channel errors are returned
+    /// immediately instead of being masked by retries.
     pub async fn resize_pty(&self, connection_id: &str, cols: u32, rows: u32) -> Result<()> {
-        let resize_tx = {
-            let pty_sessions = self.pty_sessions.read().await;
-            let pty = pty_sessions
-                .get(connection_id)
-                .ok_or_else(|| anyhow::anyhow!("PTY connection not found"))?;
-            pty.resize_tx.clone()
-        };
+        const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+        const RETRY_BUDGET: u32 = 12;
 
-        resize_tx
-            .send((cols, rows))
-            .await
-            .map_err(|_| anyhow::anyhow!("PTY resize channel closed"))
+        for attempt in 0..RETRY_BUDGET {
+            let resize_tx = {
+                let pty_sessions = self.pty_sessions.read().await;
+                pty_sessions
+                    .get(connection_id)
+                    .map(|pty| pty.resize_tx.clone())
+            };
+
+            if let Some(resize_tx) = resize_tx {
+                return resize_tx
+                    .send((cols, rows))
+                    .await
+                    .map_err(|_| anyhow::anyhow!("PTY resize channel closed"));
+            }
+
+            if attempt + 1 >= RETRY_BUDGET {
+                return Err(anyhow::anyhow!("PTY connection not found"));
+            }
+
+            tokio::time::sleep(RETRY_INTERVAL).await;
+        }
+
+        unreachable!("retry loop always returns within RETRY_BUDGET attempts")
     }
 
     /// Token that file-transfer commands should select on / poll.
@@ -503,6 +523,17 @@ impl ConnectionManager {
 mod tests {
     use super::*;
 
+    fn fake_pty_session(resize_tx: mpsc::Sender<(u32, u32)>) -> PtySession {
+        let (input_tx, _input_rx) = mpsc::channel::<Vec<u8>>(1);
+        let (_output_tx, output_rx) = mpsc::channel::<Vec<u8>>(8);
+        PtySession {
+            input_tx,
+            output_rx: Arc::new(tokio::sync::Mutex::new(output_rx)),
+            resize_tx,
+            cancel: CancellationToken::new(),
+        }
+    }
+
     #[tokio::test]
     async fn test_new_manager_has_no_connections() {
         let mgr = ConnectionManager::new();
@@ -593,6 +624,51 @@ mod tests {
         assert!(resize_task.await.unwrap().is_ok());
         assert_eq!(input_rx.recv().await.unwrap(), b"next".to_vec());
         assert_eq!(resize_rx.recv().await.unwrap(), (80, 24));
+    }
+
+    #[tokio::test]
+    async fn test_resize_pty_waits_for_late_start() {
+        let mgr = Arc::new(ConnectionManager::new());
+        let late_mgr = mgr.clone();
+        let (resize_tx, mut resize_rx) = mpsc::channel::<(u32, u32)>(8);
+
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            late_mgr.pty_sessions.write().await.insert(
+                "late-resize".to_string(),
+                Arc::new(fake_pty_session(resize_tx)),
+            );
+        });
+
+        let start = std::time::Instant::now();
+        mgr.resize_pty("late-resize", 120, 40).await.unwrap();
+        assert!(start.elapsed() >= std::time::Duration::from_millis(200));
+        assert_eq!(resize_rx.recv().await.unwrap(), (120, 40));
+    }
+
+    #[tokio::test]
+    async fn test_resize_pty_is_immediate_when_session_exists() {
+        let mgr = ConnectionManager::new();
+        let (resize_tx, mut resize_rx) = mpsc::channel::<(u32, u32)>(8);
+        mgr.pty_sessions.write().await.insert(
+            "live-resize".to_string(),
+            Arc::new(fake_pty_session(resize_tx)),
+        );
+
+        let start = std::time::Instant::now();
+        mgr.resize_pty("live-resize", 100, 30).await.unwrap();
+        assert!(start.elapsed() < std::time::Duration::from_millis(100));
+        assert_eq!(resize_rx.recv().await.unwrap(), (100, 30));
+    }
+
+    #[tokio::test]
+    async fn test_resize_pty_retry_is_bounded() {
+        let mgr = ConnectionManager::new();
+        let start = std::time::Instant::now();
+        assert!(mgr.resize_pty("missing-resize", 80, 24).await.is_err());
+        let elapsed = start.elapsed();
+        assert!(elapsed >= std::time::Duration::from_millis(1000));
+        assert!(elapsed < std::time::Duration::from_secs(5));
     }
 
     #[tokio::test]

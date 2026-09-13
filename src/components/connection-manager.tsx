@@ -34,6 +34,7 @@ import {
   AlertDialogTitle,
 } from './ui/alert-dialog';
 import { ConnectionStorageManager } from '../lib/connection-storage';
+import { applyCollapsedState, collectCollapsedFolderIds, loadCollapsedFolderIds, saveCollapsedFolderIds } from '../lib/folder-expansion';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -98,7 +99,7 @@ export function ConnectionManager({
   // Load connections from storage
   const loadConnections = useCallback((): ConnectionNode[] => {
     const tree = ConnectionStorageManager.buildConnectionTree(activeConnections);
-    return tree.length > 0 ? tree : [];
+    return tree.length > 0 ? applyCollapsedState(tree, loadCollapsedFolderIds()) : [];
   }, [activeConnections]);
 
   const [connections, setConnections] = useState<ConnectionNode[]>(() => loadConnections());
@@ -610,7 +611,9 @@ export function ConnectionManager({
         return node;
       });
     };
-    setConnections(updateNode(connections));
+    const next = updateNode(connections);
+    saveCollapsedFolderIds(collectCollapsedFolderIds(next));
+    setConnections(next);
   };
 
   const getIcon = (node: ConnectionNode) => {

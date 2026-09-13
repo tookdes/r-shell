@@ -29,14 +29,13 @@ export function connectionHasCredentials(connection: CredentialFields): boolean 
   if (method === 'anonymous') return true;
 
   if (method === 'publickey') {
-    return !!(
-      (typeof connection.privateKeyPath === 'string' && connection.privateKeyPath.trim()) ||
-      (typeof connection.privateKeyData === 'string' && connection.privateKeyData.trim())
-    );
+    // An omitted path is valid: the backend resolves ~/.ssh/id_rsa or id_ed25519.
+    return true;
   }
 
-  // password, keyboard-interactive, or unknown — need a password
-  return typeof connection.password === 'string' && connection.password.length > 0;
+  // Empty string is a configured password and enables SSH "none" fallback.
+  // Undefined/null means credentials were not saved.
+  return typeof connection.password === 'string';
 }
 
 const sessionCredentialCache = new Map<string, CredentialFields>();

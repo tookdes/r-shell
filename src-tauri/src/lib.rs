@@ -6,6 +6,7 @@ mod host_key_prompt;
 mod known_hosts;
 mod ls_parser;
 mod os_detect;
+mod os_keypath;
 mod proxy_stream;
 mod rdp_client;
 mod secrets;

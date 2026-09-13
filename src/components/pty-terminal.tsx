@@ -495,6 +495,11 @@ export function PtyTerminal({
     term.write('\r\n');
 
     let isRunning = true;
+    // Last geometry known to have reached the PTY. A resize observed while
+    // the WebSocket is unavailable is kept pending rather than marked sent.
+    let lastSentCols = term.cols;
+    let lastSentRows = term.rows;
+    let pendingResize: { cols: number; rows: number } | null = null;
     // Tracks whether a PTY session has been successfully established in this
     // effect run. Reset to false when we initiate an auto-reconnect after a
     // drop so the reconnect loop can function normally.
@@ -510,6 +515,12 @@ export function PtyTerminal({
     let rafId: number | null = null;
     let zmodemController: ZmodemTransferController | null = null;
     let zmodemActive = false;
+
+    // If StartPty never confirms, escalate to the fork's full reconnect path
+    // instead of leaving the tab stuck indefinitely.
+    const START_PTY_WATCHDOG_MS = 8000;
+    let startPtyWatchdog: ReturnType<typeof setTimeout> | null = null;
+    let ptyHandshakeDone = false;
         
     // CRITICAL: Wait for terminal to have proper dimensions before connecting
     // Hidden terminals (display: none) may have cols=10, rows=5 which breaks PTY
@@ -547,6 +558,9 @@ export function PtyTerminal({
 
     // Connect to WebSocket server
     const connectWebSocket = async () => {
+      // Geometry carried by the current StartPty request. PtyStarted uses
+      // this to detect a fit that raced the backend SSH-channel setup.
+      let startPtyDims: { cols: number; rows: number } | null = null;
       // CRITICAL: Wait for terminal to be properly sized before starting PTY
       await waitForProperSize();
       
@@ -611,15 +625,49 @@ export function PtyTerminal({
         });
         term.writeln('\x1b[32m✓ WebSocket connected\x1b[0m');
         
-        // Start PTY session
+        // Start PTY session with a stable geometry snapshot.
+        const startCols = term.cols;
+        const startRows = term.rows;
+        startPtyDims = { cols: startCols, rows: startRows };
         const startMsg = {
           type: 'StartPty',
           connection_id: connectionId,
-          cols: term.cols,
-          rows: term.rows,
+          cols: startCols,
+          rows: startRows,
         };
-        console.log(`[PTY Terminal] [${connectionId}] Starting PTY connection with ${term.cols}x${term.rows}`);
+        console.log(`[PTY Terminal] [${connectionId}] Starting PTY connection with ${startCols}x${startRows}`);
         ws.send(JSON.stringify(startMsg));
+
+        ptyHandshakeDone = false;
+        if (startPtyWatchdog) clearTimeout(startPtyWatchdog);
+        startPtyWatchdog = setTimeout(() => {
+          startPtyWatchdog = null;
+          if (!isRunning || ptyHandshakeDone) return;
+          console.warn(`[PTY Terminal] [${connectionId}] StartPty handshake timed out; escalating to full reconnect`);
+          if (connectionStatusRef.current !== 'disconnected') {
+            connectionStatusRef.current = 'disconnected';
+            onConnectionStatusChange?.(connectionId, 'disconnected');
+          }
+          const fullReconnect = onReconnectTabRef.current;
+          if (fullReconnect) {
+            void fullReconnect(connectionId);
+          } else {
+            reconnectAttemptsRef.current = 0;
+            setReconnectKey((previous) => previous + 1);
+          }
+          if (ws.readyState === WebSocket.OPEN) ws.close();
+        }, START_PTY_WATCHDOG_MS);
+
+        // Flush the latest resize observed before this socket became OPEN.
+        if (pendingResize) {
+          const { cols, rows } = pendingResize;
+          pendingResize = null;
+          if (cols !== startCols || rows !== startRows) {
+            ws.send(JSON.stringify({ type: 'Resize', connection_id: connectionId, cols, rows }));
+          }
+          lastSentCols = cols;
+          lastSentRows = rows;
+        }
       };
 
       // =========================================================================
@@ -793,6 +841,8 @@ export function PtyTerminal({
             case 'Success':
               console.log(`[PTY Terminal] [${connectionId}]`, msg.message);
               if (msg.message.includes('PTY connection started')) {
+                ptyHandshakeDone = true;
+                if (startPtyWatchdog) { clearTimeout(startPtyWatchdog); startPtyWatchdog = null; }
                 reconnectAttemptsRef.current = 0;
                 autoReconnectAfterDropRef.current = 0; // Reset drop-reconnect counter on success
                 if (hasEverConnected || isReconnectAfterDrop) {
@@ -837,6 +887,30 @@ export function PtyTerminal({
                 // control in the flush callback above.
                 const INITIAL_WINDOW = 2;
                 grantCredits(INITIAL_WINDOW);
+                ptyHandshakeDone = true;
+                if (startPtyWatchdog) { clearTimeout(startPtyWatchdog); startPtyWatchdog = null; }
+
+                // A fit may have occurred after StartPty was sent but before
+                // the backend finished creating the PTY. Reconcile once the
+                // generation proves the session exists.
+                const needsResizeSync =
+                  startPtyDims !== null &&
+                  (term.cols !== startPtyDims.cols || term.rows !== startPtyDims.rows) &&
+                  (term.cols !== lastSentCols || term.rows !== lastSentRows);
+                if (needsResizeSync) {
+                  const liveWs = wsRef.current;
+                  if (liveWs && liveWs.readyState === WebSocket.OPEN) {
+                    liveWs.send(JSON.stringify({
+                      type: 'Resize',
+                      connection_id: connectionId,
+                      cols: term.cols,
+                      rows: term.rows,
+                    }));
+                    lastSentCols = term.cols;
+                    lastSentRows = term.rows;
+                  }
+                }
+                startPtyDims = null;
               }
               break;
             }
@@ -1020,16 +1094,15 @@ export function PtyTerminal({
     // identical resize signals when the layout is settling (e.g. after closing
     // an adjacent terminal group). Each redundant SIGWINCH causes the remote
     // shell to redraw its prompt, producing the repeated "root@host:~#" lines.
-    let lastSentCols = term.cols;
-    let lastSentRows = term.rows;
     const resizeDisposable = term.onResize(({ cols, rows }) => {
       if (cols === lastSentCols && rows === lastSentRows) return;
-      lastSentCols = cols;
-      lastSentRows = rows;
       checkScrollability(); // row count changed — re-evaluate scrollability
 
       const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN) {
+        lastSentCols = cols;
+        lastSentRows = rows;
+        pendingResize = null;
         const resizeMsg = {
           type: 'Resize',
           connection_id: connectionId,
@@ -1052,6 +1125,8 @@ export function PtyTerminal({
           resize: true,
           outputWatermark: outputWatermarkRef.current,
         });
+      } else {
+        pendingResize = { cols, rows };
       }
     });
 
@@ -1118,6 +1193,7 @@ export function PtyTerminal({
     return () => {
       console.log(`[PTY Terminal] [${connectionId}] Cleaning up`);
       isRunning = false;
+      if (startPtyWatchdog) { clearTimeout(startPtyWatchdog); startPtyWatchdog = null; }
 
       // Cancel any pending RAF write batch and discard queued data so no
       // stale writes reach a terminal that is about to be disposed.
