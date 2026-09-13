@@ -103,9 +103,9 @@ replace_once(
 tabs = "src/components/terminal/group-tab-bar.tsx"
 replace_once(
     tabs,
-    "import { DEFAULT_APP_KEYBOARD_SHORTCUTS, formatKeyboardShortcut } from '../../lib/keyboard-shortcuts';\n",
-    "import { DEFAULT_APP_KEYBOARD_SHORTCUTS, formatKeyboardShortcut } from '../../lib/keyboard-shortcuts';\n"
-    "import { announce } from '../../lib/live-announcer';\n",
+    "import { DEFAULT_APP_KEYBOARD_SHORTCUTS, formatKeyboardShortcut } from '@/lib/keyboard-shortcuts';\n",
+    "import { DEFAULT_APP_KEYBOARD_SHORTCUTS, formatKeyboardShortcut } from '@/lib/keyboard-shortcuts';\n"
+    "import { announce } from '@/lib/live-announcer';\n",
 )
 # Pointer drag final dispatch.
 replace_once(
