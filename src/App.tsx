@@ -691,7 +691,7 @@ function AppContent() {
         const pendingSshId = currentPendingSshConnectionId;
         currentPendingSshConnectionId = null;
         if (pendingSshId) {
-          void invoke('ssh_cancel_connect', { connectionId: pendingSshId }).catch((cancelError) => {
+          void invoke('ssh_cancel_connect', { connection_id: pendingSshId }).catch((cancelError) => {
             console.warn(`Failed to cancel timed-out restore ${pendingSshId}:`, cancelError);
           });
         }
