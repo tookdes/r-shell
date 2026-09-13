@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useLayoutEffect, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Plus, Copy, RefreshCw, ArrowLeft, ArrowRight, XCircle, ArrowUp, ArrowDown, MoveRight, FolderSync, Terminal, Monitor, FileCode } from 'lucide-react';
 import type { TerminalTab, SplitDirection } from '../../lib/terminal-group-types';
@@ -129,22 +129,55 @@ export function GroupTabBar({
 
   // ── Pointer-based custom drag ──
 
+  // FLIP animation smooths reorder/close commits instead of jumping tabs.
+  const tabOrderRef = useRef<{ order: string; lefts: Map<string, number> } | null>(null);
+  useLayoutEffect(() => {
+    const container = tabBarRef.current;
+    if (!container) return;
+    const lefts = new Map<string, number>();
+    for (const node of container.querySelectorAll<HTMLElement>('[data-tab-id]')) {
+      lefts.set(node.dataset.tabId ?? '', node.getBoundingClientRect().left);
+    }
+    const order = tabs.map((tab) => tab.id).join('\u0000');
+    const prev = tabOrderRef.current;
+    tabOrderRef.current = { order, lefts };
+    if (!prev || prev.order === order) return;
+    if (typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    for (const node of container.querySelectorAll<HTMLElement>('[data-tab-id]')) {
+      const id = node.dataset.tabId ?? '';
+      const prevLeft = prev.lefts.get(id);
+      const nextLeft = lefts.get(id);
+      if (prevLeft === undefined || nextLeft === undefined) continue;
+      const delta = prevLeft - nextLeft;
+      if (Math.abs(delta) < 1) continue;
+      node.style.transform = `translateX(${delta}px)`;
+      node.style.transition = 'none';
+      void node.offsetWidth;
+      node.style.transition = 'transform 150ms ease';
+      node.style.transform = '';
+    }
+  }, [tabs]);
+
   const handlePointerDown = useCallback(
     (e: React.PointerEvent, tabId: string, tabName: string) => {
       if (e.button !== 0) return; // left click only
       e.preventDefault(); // prevent native drag ghost + text selection
 
+      try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* jsdom / old WebKit */ }
+      const pointerId = e.pointerId;
       const startX = e.clientX;
       const startY = e.clientY;
       let dragging = false;
       const DRAG_THRESHOLD = 5;
 
       const onMove = (ev: PointerEvent) => {
+        if (ev.pointerId !== pointerId) return;
+        if (ev.buttons === 0) { onUp(ev); return; }
         const dx = ev.clientX - startX;
         const dy = ev.clientY - startY;
 
         if (!dragging) {
-          if (Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) return;
+          if (Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
           dragging = true;
           activeDrag = { tabId, sourceGroupId: groupId, tabName };
           document.body.style.userSelect = 'none';
@@ -353,6 +386,7 @@ export function GroupTabBar({
                       variant="ghost"
                       size="sm"
                       className="p-0 h-4 w-4 opacity-0 group-hover:opacity-100"
+                      onPointerDown={(e) => e.stopPropagation()}
                       onClick={(e) => {
                         e.stopPropagation();
                         handleTabClose(tab.id);
