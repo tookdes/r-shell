@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - sync/upstream-2.9.2-selected
+    paths:
+      - .github/workflows/apply-upstream-phase2.yml
+      - scripts/apply-upstream-2.9.2-phase2.py
+      - scripts/apply-upstream-2.9.2-phase2-tests.py
 
 permissions:
   contents: write
@@ -34,9 +38,25 @@ jobs:
       - name: Rust formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml
       - name: Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml os_keypath --lib
+        shell: bash
+        run: |
+          set +e
+          cargo test --manifest-path src-tauri/Cargo.toml os_keypath --lib > /tmp/rust-phase2.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/rust-phase2.log
+          if [ "$status" -ne 0 ]; then
+            cp /tmp/rust-phase2.log rust-phase2-error.txt
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add rust-phase2-error.txt
+            git commit -m "chore: capture phase 2 rust failure"
+            git push origin HEAD:sync/upstream-2.9.2-selected
+            exit "$status"
+          fi
       - name: Commit validated product changes
         run: |
+          rm -f rust-phase2-error.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
