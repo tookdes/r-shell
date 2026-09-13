@@ -1,9 +1,7 @@
 name: Apply upstream selected phase 2
 
 on:
-  push:
-    branches:
-      - sync/upstream-2.9.2-selected
+  workflow_dispatch:
 
 permissions:
   contents: write
