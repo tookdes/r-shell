@@ -18,6 +18,7 @@ import {
   ContextMenuSubContent,
 } from '../ui/context-menu';
 import { DEFAULT_APP_KEYBOARD_SHORTCUTS, formatKeyboardShortcut } from '@/lib/keyboard-shortcuts';
+import { announce } from '@/lib/live-announcer';
 
 // ── Module-level drag state (shared across all GroupTabBar instances) ──
 
@@ -256,7 +257,7 @@ export function GroupTabBar({
         const dropTarget = (clientX || clientY) ? findDropTargetAt(clientX, clientY) : null;
         if (dropTarget) {
           const targetIndex = calcInsertionIndex(dropTarget.element, clientX);
-          const { tabId: dragTabId, sourceGroupId } = activeDrag;
+          const { tabId: dragTabId, sourceGroupId, tabName: dragTabName } = activeDrag;
 
           if (sourceGroupId === dropTarget.groupId) {
             // Same group — reorder
@@ -266,6 +267,7 @@ export function GroupTabBar({
               const adjustedTarget = targetIndex > fromIndex ? targetIndex - 1 : targetIndex;
               if (adjustedTarget !== fromIndex) {
                 dispatch({ type: 'REORDER_TAB', groupId: sourceGroupId, fromIndex, toIndex: adjustedTarget });
+                announce(`${dragTabName} moved to position ${adjustedTarget + 1} of ${tabs.length}`);
               }
             }
           } else {
@@ -277,6 +279,7 @@ export function GroupTabBar({
               tabId: dragTabId,
               targetIndex,
             });
+            announce(`${dragTabName} moved to another split group`);
           }
         }
 
@@ -428,14 +431,14 @@ export function GroupTabBar({
                   )}
                   {/* Reorder within the current group */}
                   {index > 0 && (
-                    <ContextMenuItem onClick={() => dispatch({ type: 'REORDER_TAB', groupId, fromIndex: index, toIndex: index - 1 })}>
+                    <ContextMenuItem onClick={() => { dispatch({ type: 'REORDER_TAB', groupId, fromIndex: index, toIndex: index - 1 }); announce(`${tab.name} moved to position ${index} of ${tabs.length}`); }}>
                       <ArrowLeft className="mr-2 h-4 w-4" />
                       {t('contextMenu.moveTabLeft')}
                       <ContextMenuShortcut>{formattedMoveTabLeftShortcut}</ContextMenuShortcut>
                     </ContextMenuItem>
                   )}
                   {index < tabs.length - 1 && (
-                    <ContextMenuItem onClick={() => dispatch({ type: 'REORDER_TAB', groupId, fromIndex: index, toIndex: index + 1 })}>
+                    <ContextMenuItem onClick={() => { dispatch({ type: 'REORDER_TAB', groupId, fromIndex: index, toIndex: index + 1 }); announce(`${tab.name} moved to position ${index + 2} of ${tabs.length}`); }}>
                       <ArrowRight className="mr-2 h-4 w-4" />
                       {t('contextMenu.moveTabRight')}
                       <ContextMenuShortcut>{formattedMoveTabRightShortcut}</ContextMenuShortcut>

@@ -113,19 +113,8 @@ pub async fn ssh_connect(
             password: request.password.ok_or("Password required")?,
         },
         "publickey" => {
-            let has_path = request
-                .key_path
-                .as_ref()
-                .map(|s| !s.trim().is_empty())
-                .unwrap_or(false);
-            let has_data = request
-                .key_data
-                .as_ref()
-                .map(|s| !s.trim().is_empty())
-                .unwrap_or(false);
-            if !has_path && !has_data {
-                return Err("Key path or key content required".to_string());
-            }
+            // Missing/blank key_path is intentional: load_private_key()
+            // resolves the user's default ~/.ssh/id_rsa or id_ed25519.
             AuthMethod::PublicKey {
                 key_path: request.key_path,
                 key_data: request.key_data,
