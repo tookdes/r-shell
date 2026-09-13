@@ -37,7 +37,7 @@ anchor = "  // Requirement 5.2: Ctrl+1~9 focuses group by index (0-based)\n"
 addition = """  it('Ctrl+Shift+PageUp moves the active tab left', () => {
     const actions = createMockActions();
     const shortcuts = createSplitViewShortcuts(actions);
-    const shortcut = findShortcut(shortcuts, 'pageup', { ctrlKey: true, shiftKey: true });
+    const shortcut = findShortcut(shortcuts, 'PageUp', { ctrlKey: true, shiftKey: true });
     expect(shortcut).toBeDefined();
     shortcut!.handler();
     expect(actions.moveTabLeft).toHaveBeenCalledOnce();
@@ -46,7 +46,7 @@ addition = """  it('Ctrl+Shift+PageUp moves the active tab left', () => {
   it('Ctrl+Shift+PageDown moves the active tab right', () => {
     const actions = createMockActions();
     const shortcuts = createSplitViewShortcuts(actions);
-    const shortcut = findShortcut(shortcuts, 'pagedown', { ctrlKey: true, shiftKey: true });
+    const shortcut = findShortcut(shortcuts, 'PageDown', { ctrlKey: true, shiftKey: true });
     expect(shortcut).toBeDefined();
     shortcut!.handler();
     expect(actions.moveTabRight).toHaveBeenCalledOnce();
