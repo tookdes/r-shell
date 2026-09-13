@@ -93,6 +93,14 @@ export function GroupTabBar({
     closeTabShortcut ?? DEFAULT_APP_KEYBOARD_SHORTCUTS.closeSession,
     navigator.platform.toUpperCase().includes('MAC'),
   );
+  const formattedMoveTabLeftShortcut = formatKeyboardShortcut(
+    DEFAULT_APP_KEYBOARD_SHORTCUTS.moveTabLeft,
+    navigator.platform.toUpperCase().includes('MAC'),
+  );
+  const formattedMoveTabRightShortcut = formatKeyboardShortcut(
+    DEFAULT_APP_KEYBOARD_SHORTCUTS.moveTabRight,
+    navigator.platform.toUpperCase().includes('MAC'),
+  );
   const { dispatch } = useTerminalGroups();
   const { onCloseTabs } = useTerminalCallbacks();
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -418,6 +426,22 @@ export function GroupTabBar({
                       <ContextMenuSeparator />
                     </>
                   )}
+                  {/* Reorder within the current group */}
+                  {index > 0 && (
+                    <ContextMenuItem onClick={() => dispatch({ type: 'REORDER_TAB', groupId, fromIndex: index, toIndex: index - 1 })}>
+                      <ArrowLeft className="mr-2 h-4 w-4" />
+                      {t('contextMenu.moveTabLeft')}
+                      <ContextMenuShortcut>{formattedMoveTabLeftShortcut}</ContextMenuShortcut>
+                    </ContextMenuItem>
+                  )}
+                  {index < tabs.length - 1 && (
+                    <ContextMenuItem onClick={() => dispatch({ type: 'REORDER_TAB', groupId, fromIndex: index, toIndex: index + 1 })}>
+                      <ArrowRight className="mr-2 h-4 w-4" />
+                      {t('contextMenu.moveTabRight')}
+                      <ContextMenuShortcut>{formattedMoveTabRightShortcut}</ContextMenuShortcut>
+                    </ContextMenuItem>
+                  )}
+                  {(index > 0 || index < tabs.length - 1) && <ContextMenuSeparator />}
                   {/* Close */}
                   <ContextMenuItem onClick={() => handleTabClose(tab.id)}>
                     <X className="mr-2 h-4 w-4" />

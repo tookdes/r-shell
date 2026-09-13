@@ -38,8 +38,8 @@ describe('connectionHasCredentials', () => {
     ).toBe(true);
   });
 
-  it('rejects publickey auth with neither path nor data', () => {
-    expect(connectionHasCredentials({ authMethod: 'publickey' })).toBe(false);
+  it('accepts publickey auth with neither path nor data so the backend can resolve default keys', () => {
+    expect(connectionHasCredentials({ authMethod: 'publickey' })).toBe(true);
   });
 
   it('accepts anonymous auth without password', () => {
@@ -109,13 +109,13 @@ describe('session credential cache', () => {
     expect(getSessionCredentials('profile-1')?.password).toBe('');
   });
 
-  it('does not resurrect a cached secret when storage contains an explicit empty value', () => {
+  it('does not resurrect a cached secret when storage contains an explicit passwordless value', () => {
     rememberSessionCredentials('profile-1', { password: 'old-secret' });
     const merged = mergeWithSessionCredentials('profile-1', {
       authMethod: 'password' as const,
       password: '',
     });
     expect(merged.password).toBe('');
-    expect(connectionHasCredentials(merged)).toBe(false);
+    expect(connectionHasCredentials(merged)).toBe(true);
   });
 });

@@ -21,6 +21,8 @@ function createMockActions() {
     closeTab: vi.fn(),
     nextTab: vi.fn(),
     prevTab: vi.fn(),
+    moveTabLeft: vi.fn(),
+    moveTabRight: vi.fn(),
   };
 }
 
@@ -40,11 +42,11 @@ function findShortcut(
 describe('createSplitViewShortcuts', () => {
   // Validates: Requirements 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7
 
-  it('returns 14 shortcuts total', () => {
+  it('returns 16 shortcuts total', () => {
     const actions = createMockActions();
     const shortcuts = createSplitViewShortcuts(actions);
-    // 1 splitRight + 1 splitDown + 9 focusGroup + 1 closeTab + 1 nextTab + 1 prevTab
-    expect(shortcuts).toHaveLength(14);
+    // Existing 14 shortcuts + move active tab left/right.
+    expect(shortcuts).toHaveLength(16);
   });
 
   // Requirement 5.1: Ctrl+\ splits right
@@ -67,6 +69,24 @@ describe('createSplitViewShortcuts', () => {
     expect(shortcut).toBeDefined();
     shortcut!.handler();
     expect(actions.splitDown).toHaveBeenCalledOnce();
+  });
+
+  it('Ctrl+Shift+PageUp moves the active tab left', () => {
+    const actions = createMockActions();
+    const shortcuts = createSplitViewShortcuts(actions);
+    const shortcut = findShortcut(shortcuts, 'PageUp', { ctrlKey: true, shiftKey: true });
+    expect(shortcut).toBeDefined();
+    shortcut!.handler();
+    expect(actions.moveTabLeft).toHaveBeenCalledOnce();
+  });
+
+  it('Ctrl+Shift+PageDown moves the active tab right', () => {
+    const actions = createMockActions();
+    const shortcuts = createSplitViewShortcuts(actions);
+    const shortcut = findShortcut(shortcuts, 'PageDown', { ctrlKey: true, shiftKey: true });
+    expect(shortcut).toBeDefined();
+    shortcut!.handler();
+    expect(actions.moveTabRight).toHaveBeenCalledOnce();
   });
 
   // Requirement 5.2: Ctrl+1~9 focuses group by index (0-based)

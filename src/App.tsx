@@ -280,6 +280,14 @@ function AppContent() {
   // Keyboard shortcuts: layout + split view
   const splitViewShortcuts = useMemo(() => {
     const groupIds = Object.keys(state.groups);
+    const moveActiveTab = (delta: -1 | 1) => {
+      if (!activeGroup?.activeTabId || activeGroup.tabs.length < 2) return;
+      const fromIndex = activeGroup.tabs.findIndex((tab) => tab.id === activeGroup.activeTabId);
+      if (fromIndex < 0) return;
+      const toIndex = fromIndex + delta;
+      if (toIndex < 0 || toIndex >= activeGroup.tabs.length) return;
+      dispatch({ type: 'REORDER_TAB', groupId: activeGroup.id, fromIndex, toIndex });
+    };
     return createSplitViewShortcuts(
       {
         splitRight: () => {
@@ -316,6 +324,8 @@ function AppContent() {
             dispatch({ type: 'ACTIVATE_TAB', groupId: activeGroup.id, tabId: activeGroup.tabs[prevIndex].id });
           }
         },
+        moveTabLeft: () => moveActiveTab(-1),
+        moveTabRight: () => moveActiveTab(1),
       },
       keyboardShortcutSettings,
     );

@@ -699,7 +699,9 @@
     "clearScrollback": "Clear Scrollback",
     "saveOutputToFile": "Save Output to File",
     "closeTabsToLeft": "Close Tabs to Left",
-    "closeAllTabs": "Close All Tabs"
+    "closeAllTabs": "Close All Tabs",
+    "moveTabLeft": "Move Tab Left",
+    "moveTabRight": "Move Tab Right"
   },
   "updateChecker": {
     "checkForUpdates": "Check for Updates",
