@@ -1,19 +1,32 @@
 /**
  * Credential encryption helpers backed by Tauri AES-256-GCM commands.
- * Plaintext is only held briefly in memory while connecting.
+ *
+ * The outer `enc:v1:` marker remains stable for storage compatibility. New
+ * backend payloads start with `v2:` and use an OS-keychain-backed master key.
+ * Legacy payloads are decrypted and re-sealed the next time a profile is saved.
  */
 
 import { invoke } from '@tauri-apps/api/core';
 
 const ENC_PREFIX = 'enc:v1:';
+const KEYCHAIN_PAYLOAD_PREFIX = 'v2:';
 
 export function isEncryptedSecret(value: string | undefined | null): boolean {
   return typeof value === 'string' && value.startsWith(ENC_PREFIX);
 }
 
-export async function encryptSecret(plaintext: string): Promise<string> {
-  if (!plaintext) return plaintext;
-  if (isEncryptedSecret(plaintext)) return plaintext;
+export function isKeychainEncryptedSecret(value: string | undefined | null): boolean {
+  return typeof value === 'string' && value.startsWith(`${ENC_PREFIX}${KEYCHAIN_PAYLOAD_PREFIX}`);
+}
+
+export async function encryptSecret(value: string): Promise<string> {
+  if (!value) return value;
+  if (isKeychainEncryptedSecret(value)) return value;
+
+  // Legacy encrypted values must be opened with the historical file key and
+  // immediately re-sealed with the OS-keychain-backed key. This makes migration
+  // incremental and avoids a destructive one-shot conversion at startup.
+  const plaintext = isEncryptedSecret(value) ? await decryptSecret(value) : value;
   const cipher = await invoke<string>('secrets_encrypt', { plaintext });
   return `${ENC_PREFIX}${cipher}`;
 }
