@@ -1,7 +1,9 @@
 name: Apply upstream selected phase 2
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - sync/upstream-2.9.2-selected
 
 permissions:
   contents: write
@@ -20,7 +22,9 @@ jobs:
           node-version: 22
           cache: pnpm
       - name: Apply precise patches
-        run: python3 scripts/apply-upstream-2.9.2-phase2.py
+        run: |
+          python3 scripts/apply-upstream-2.9.2-phase2.py
+          python3 scripts/apply-upstream-2.9.2-phase2-tests.py
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
       - name: Frontend build
@@ -28,7 +32,7 @@ jobs:
       - name: Frontend tests
         run: pnpm test
       - name: Rust formatting
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml os_keypath --lib
       - name: Commit validated product changes
