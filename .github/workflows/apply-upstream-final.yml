@@ -1,0 +1,61 @@
+name: Validate final upstream absorption
+
+on:
+  push:
+    branches:
+      - sync/upstream-2.9.2-selected
+    paths:
+      - .github/workflows/apply-upstream-final.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: sync/upstream-2.9.2-selected
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libglib2.0-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+      - name: Apply remaining precise patches
+        run: |
+          if [ -f scripts/apply-upstream-2.9.2-phase2.py ]; then python3 scripts/apply-upstream-2.9.2-phase2.py; fi
+          if [ -f scripts/apply-upstream-2.9.2-phase2-tests.py ]; then python3 scripts/apply-upstream-2.9.2-phase2-tests.py; fi
+          python3 scripts/apply-upstream-2.9.2-phase3.py
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Frontend build
+        run: pnpm build
+      - name: Frontend tests
+        run: pnpm test
+      - name: Rust format
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+      - name: Clean validation scaffolding
+        run: |
+          rm -f rust-phase2-error.txt
+          rm -f scripts/apply-upstream-2.9.2-phase2.py
+          rm -f scripts/apply-upstream-2.9.2-phase2-tests.py
+          rm -f scripts/apply-upstream-2.9.2-phase3.py
+          rm -f .github/workflows/apply-upstream-phase2.yml
+          rm -f .github/workflows/apply-upstream-final.yml
+      - name: Commit validated product changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: absorb upstream 2.9.2 reliability improvements"
+          git fetch origin sync/upstream-2.9.2-selected
+          git rebase origin/sync/upstream-2.9.2-selected
+          git push origin HEAD:sync/upstream-2.9.2-selected
