@@ -374,7 +374,7 @@ mod shell_integration_tests {
             .await
             .expect("connect to Docker SSH server");
 
-        let pty = client.create_pty_session(80, 24).await.expect("create PTY");
+        let pty = client.create_pty_session("test-pty", 1, 80, 24).await.expect("create PTY");
         let initial_output = read_until(&pty, b"\x1b\\").await;
         assert!(
             String::from_utf8_lossy(&initial_output).contains("/home/testuser"),
