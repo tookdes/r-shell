@@ -29,6 +29,117 @@ const BASH_VERSION_MARKER: &str = "__RSHELL_BASH_VERSION__";
 const BASH_SHELL_INTEGRATION_PREFIX: &str = r#" stty echo; __rshell_report_cwd(){ local p=${PWD//%/%25}; p=${p// /%20}; p=${p//#/%23}; p=${p//\?/%3F}; printf '\033]7;file://%s%s\033\\' "${HOSTNAME:-localhost}" "$p"; }; "#;
 const BASH_SHELL_INTEGRATION_SUFFIX: &str = "printf '\\r\\033[2K'\n";
 
+const PTY_LOOP_STATS_INTERVAL: Duration = Duration::from_secs(10);
+const PTY_NON_DATA_WAKEUP_WARN_THRESHOLD: u64 = 1_000;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct PtyLoopStats {
+    wait_wakeups: u64,
+    data_messages: u64,
+    data_bytes: u64,
+    extended_messages: u64,
+    extended_bytes: u64,
+    exit_status_messages: u64,
+    window_adjusted_messages: u64,
+    success_messages: u64,
+    failure_messages: u64,
+    other_messages: u64,
+    terminal_events: u64,
+    resize_events: u64,
+}
+
+impl PtyLoopStats {
+    fn non_data_wakeups(&self) -> u64 {
+        self.exit_status_messages
+            .saturating_add(self.window_adjusted_messages)
+            .saturating_add(self.success_messages)
+            .saturating_add(self.failure_messages)
+            .saturating_add(self.other_messages)
+            .saturating_add(self.terminal_events)
+    }
+
+    fn has_activity(&self) -> bool {
+        self.wait_wakeups != 0 || self.resize_events != 0
+    }
+
+    fn suspicious_non_data_loop(&self) -> bool {
+        self.non_data_wakeups() >= PTY_NON_DATA_WAKEUP_WARN_THRESHOLD
+            && self.data_messages == 0
+            && self.extended_messages == 0
+    }
+
+    fn record_data(&mut self, bytes: usize) {
+        self.wait_wakeups = self.wait_wakeups.saturating_add(1);
+        self.data_messages = self.data_messages.saturating_add(1);
+        self.data_bytes = self.data_bytes.saturating_add(bytes as u64);
+    }
+
+    fn record_extended_data(&mut self, bytes: usize) {
+        self.wait_wakeups = self.wait_wakeups.saturating_add(1);
+        self.extended_messages = self.extended_messages.saturating_add(1);
+        self.extended_bytes = self.extended_bytes.saturating_add(bytes as u64);
+    }
+
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+fn log_pty_loop_stats(
+    connection_id: &str,
+    generation: u64,
+    stats: &PtyLoopStats,
+    final_sample: bool,
+) {
+    if !stats.has_activity() {
+        return;
+    }
+
+    let non_data_wakeups = stats.non_data_wakeups();
+    if stats.suspicious_non_data_loop() {
+        tracing::warn!(
+            "[PTY-STATS] id={} gen={} final={} wait_wakeups={} data_msgs={} data_bytes={} extended_msgs={} extended_bytes={} non_data_wakeups={} window_adjusted={} success={} failure={} exit_status={} other={} terminal_events={} resize_events={} suspicious_non_data_loop=true",
+            connection_id,
+            generation,
+            final_sample,
+            stats.wait_wakeups,
+            stats.data_messages,
+            stats.data_bytes,
+            stats.extended_messages,
+            stats.extended_bytes,
+            non_data_wakeups,
+            stats.window_adjusted_messages,
+            stats.success_messages,
+            stats.failure_messages,
+            stats.exit_status_messages,
+            stats.other_messages,
+            stats.terminal_events,
+            stats.resize_events,
+        );
+    } else {
+        tracing::info!(
+            "[PTY-STATS] id={} gen={} final={} wait_wakeups={} data_msgs={} data_bytes={} extended_msgs={} extended_bytes={} non_data_wakeups={} window_adjusted={} success={} failure={} exit_status={} other={} terminal_events={} resize_events={}",
+            connection_id,
+            generation,
+            final_sample,
+            stats.wait_wakeups,
+            stats.data_messages,
+            stats.data_bytes,
+            stats.extended_messages,
+            stats.extended_bytes,
+            non_data_wakeups,
+            stats.window_adjusted_messages,
+            stats.success_messages,
+            stats.failure_messages,
+            stats.exit_status_messages,
+            stats.other_messages,
+            stats.terminal_events,
+            stats.resize_events,
+        );
+    }
+}
+
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct BashVersion {
     pub(crate) major: u32,
@@ -550,7 +661,13 @@ impl SshClient {
 
     /// Create a persistent PTY shell session (like ttyd)
     /// This enables interactive commands like vim, less, more, top, etc.
-    pub async fn create_pty_session(&self, cols: u32, rows: u32) -> Result<PtySession> {
+    pub async fn create_pty_session(
+        &self,
+        connection_id: &str,
+        generation: u64,
+        cols: u32,
+        rows: u32,
+    ) -> Result<PtySession> {
         if let Some(session) = &self.session {
             // Run the probes on separate exec channels: `BASH_VERSION` is an
             // unexported shell variable, while the POSIX login-shell probe must
@@ -685,17 +802,33 @@ impl SshClient {
             });
             let startup_input_tx = input_tx.clone();
 
-            // Spawn task to handle output (SSH → frontend) AND resize requests.
-            // The channel must stay in this task because `wait()` requires `&mut self`,
-            // but we also need `window_change()` which only requires `&self`.
-            // We use `tokio::select!` to multiplex between output reading and resize.
+            // Spawn task to handle output (SSH → frontend), resize requests, and
+            // low-overhead PTY wakeup diagnostics. Counters stay local to this
+            // task, so the hot path only performs integer increments.
+            let diagnostic_connection_id = connection_id.to_string();
             tokio::spawn(async move {
                 let mut pending_startup = startup_bytes;
+                let mut stats = PtyLoopStats::default();
+                let mut stats_interval = tokio::time::interval_at(
+                    tokio::time::Instant::now() + PTY_LOOP_STATS_INTERVAL,
+                    PTY_LOOP_STATS_INTERVAL,
+                );
+                stats_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+                tracing::info!(
+                    "[PTY-STATS] armed id={} gen={} interval_secs={} non_data_warn_threshold={}",
+                    diagnostic_connection_id,
+                    generation,
+                    PTY_LOOP_STATS_INTERVAL.as_secs(),
+                    PTY_NON_DATA_WAKEUP_WARN_THRESHOLD,
+                );
+
                 loop {
                     tokio::select! {
                         msg = channel.wait() => {
                             match msg {
                                 Some(ChannelMsg::Data { data }) => {
+                                    stats.record_data(data.len());
                                     // First shell output: inject the startup command now.
                                     if let Some(bytes) = pending_startup.take() {
                                         if startup_input_tx.send(bytes).await.is_err() {
@@ -707,24 +840,53 @@ impl SshClient {
                                     }
                                 }
                                 Some(ChannelMsg::ExtendedData { data, .. }) => {
-                                    // stderr data (also send to output)
+                                    stats.record_extended_data(data.len());
                                     if output_tx.send(data.to_vec()).await.is_err() {
                                         break;
                                     }
                                 }
                                 Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
-                                    tracing::warn!("[PTY] Channel closed (remote shell ended or SSH connection lost)");
+                                    stats.wait_wakeups = stats.wait_wakeups.saturating_add(1);
+                                    stats.terminal_events = stats.terminal_events.saturating_add(1);
+                                    tracing::warn!(
+                                        "[PTY] Channel closed id={} gen={} (remote shell ended or SSH connection lost)",
+                                        diagnostic_connection_id,
+                                        generation,
+                                    );
                                     break;
                                 }
                                 Some(ChannelMsg::ExitStatus { exit_status }) => {
-                                    tracing::info!("[PTY] Process exited with status: {}", exit_status);
+                                    stats.wait_wakeups = stats.wait_wakeups.saturating_add(1);
+                                    stats.exit_status_messages = stats.exit_status_messages.saturating_add(1);
+                                    tracing::info!(
+                                        "[PTY] Process exited id={} gen={} status={}",
+                                        diagnostic_connection_id,
+                                        generation,
+                                        exit_status,
+                                    );
                                 }
-                                _ => {}
+                                Some(ChannelMsg::WindowAdjusted { .. }) => {
+                                    stats.wait_wakeups = stats.wait_wakeups.saturating_add(1);
+                                    stats.window_adjusted_messages = stats.window_adjusted_messages.saturating_add(1);
+                                }
+                                Some(ChannelMsg::Success) => {
+                                    stats.wait_wakeups = stats.wait_wakeups.saturating_add(1);
+                                    stats.success_messages = stats.success_messages.saturating_add(1);
+                                }
+                                Some(ChannelMsg::Failure) => {
+                                    stats.wait_wakeups = stats.wait_wakeups.saturating_add(1);
+                                    stats.failure_messages = stats.failure_messages.saturating_add(1);
+                                }
+                                Some(_) => {
+                                    stats.wait_wakeups = stats.wait_wakeups.saturating_add(1);
+                                    stats.other_messages = stats.other_messages.saturating_add(1);
+                                }
                             }
                         }
                         resize = resize_rx.recv() => {
                             match resize {
                                 Some((cols, rows)) => {
+                                    stats.resize_events = stats.resize_events.saturating_add(1);
                                     if let Err(e) = channel.window_change(cols, rows, 0, 0).await {
                                         tracing::warn!("[PTY] Failed to send window change: {}", e);
                                     } else {
@@ -732,13 +894,33 @@ impl SshClient {
                                     }
                                 }
                                 None => {
-                                    // resize channel closed, session is being torn down
                                     break;
                                 }
                             }
                         }
+                        _ = stats_interval.tick() => {
+                            log_pty_loop_stats(
+                                &diagnostic_connection_id,
+                                generation,
+                                &stats,
+                                false,
+                            );
+                            stats.reset();
+                        }
                     }
                 }
+
+                log_pty_loop_stats(
+                    &diagnostic_connection_id,
+                    generation,
+                    &stats,
+                    true,
+                );
+                tracing::info!(
+                    "[PTY-STATS] task exited id={} gen={}",
+                    diagnostic_connection_id,
+                    generation,
+                );
             });
 
             Ok(PtySession {
