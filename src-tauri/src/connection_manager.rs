@@ -211,15 +211,20 @@ impl ConnectionManager {
             }
         }
 
-        // Create PTY session
-        let pty = client.create_pty_session(cols, rows).await?;
+        // Reserve a generation before creating the PTY so diagnostics emitted
+        // by the SSH channel task can be correlated with this exact lifecycle.
+        // A failed start may leave a harmless gap in generation values.
+        let current_gen = {
+            let mut generations = self.pty_generations.write().await;
+            let gen = generations.entry(connection_id.to_string()).or_insert(0);
+            *gen += 1;
+            *gen
+        };
 
-        // Bump generation so any in-flight Close for the old session is ignored
-        let mut generations = self.pty_generations.write().await;
-        let gen = generations.entry(connection_id.to_string()).or_insert(0);
-        *gen += 1;
-        let current_gen = *gen;
-        drop(generations);
+        // Create PTY session
+        let pty = client
+            .create_pty_session(connection_id, current_gen, cols, rows)
+            .await?;
 
         // Store PTY session
         let mut pty_sessions = self.pty_sessions.write().await;
