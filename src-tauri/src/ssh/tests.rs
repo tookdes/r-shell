@@ -374,7 +374,10 @@ mod shell_integration_tests {
             .await
             .expect("connect to Docker SSH server");
 
-        let pty = client.create_pty_session("test-pty", 1, 80, 24).await.expect("create PTY");
+        let pty = client
+            .create_pty_session("test-pty", 1, 80, 24)
+            .await
+            .expect("create PTY");
         let initial_output = read_until(&pty, b"\x1b\\").await;
         assert!(
             String::from_utf8_lossy(&initial_output).contains("/home/testuser"),
@@ -653,7 +656,6 @@ mod compression_pref_tests {
     }
 }
 
-
 #[cfg(test)]
 mod pty_loop_stats_tests {
     use super::super::{PtyLoopStats, PTY_NON_DATA_WAKEUP_WARN_THRESHOLD};
@@ -674,10 +676,7 @@ mod pty_loop_stats_tests {
         };
 
         assert!(stats.has_activity());
-        assert_eq!(
-            stats.non_data_wakeups(),
-            PTY_NON_DATA_WAKEUP_WARN_THRESHOLD
-        );
+        assert_eq!(stats.non_data_wakeups(), PTY_NON_DATA_WAKEUP_WARN_THRESHOLD);
         assert!(stats.suspicious_non_data_loop());
     }
 
