@@ -652,3 +652,46 @@ mod compression_pref_tests {
         assert_eq!(negotiate(prefs, "none,zlib@openssh.com"), Some("none"));
     }
 }
+
+
+#[cfg(test)]
+mod pty_loop_stats_tests {
+    use super::super::{PtyLoopStats, PTY_NON_DATA_WAKEUP_WARN_THRESHOLD};
+
+    #[test]
+    fn idle_stats_have_no_activity() {
+        let stats = PtyLoopStats::default();
+        assert!(!stats.has_activity());
+        assert!(!stats.suspicious_non_data_loop());
+    }
+
+    #[test]
+    fn non_data_wakeup_threshold_is_flagged() {
+        let stats = PtyLoopStats {
+            wait_wakeups: PTY_NON_DATA_WAKEUP_WARN_THRESHOLD,
+            window_adjusted_messages: PTY_NON_DATA_WAKEUP_WARN_THRESHOLD,
+            ..PtyLoopStats::default()
+        };
+
+        assert!(stats.has_activity());
+        assert_eq!(
+            stats.non_data_wakeups(),
+            PTY_NON_DATA_WAKEUP_WARN_THRESHOLD
+        );
+        assert!(stats.suspicious_non_data_loop());
+    }
+
+    #[test]
+    fn real_output_suppresses_non_data_loop_warning() {
+        let mut stats = PtyLoopStats {
+            wait_wakeups: PTY_NON_DATA_WAKEUP_WARN_THRESHOLD,
+            window_adjusted_messages: PTY_NON_DATA_WAKEUP_WARN_THRESHOLD,
+            ..PtyLoopStats::default()
+        };
+        stats.record_data(128);
+
+        assert_eq!(stats.data_messages, 1);
+        assert_eq!(stats.data_bytes, 128);
+        assert!(!stats.suspicious_non_data_loop());
+    }
+}
