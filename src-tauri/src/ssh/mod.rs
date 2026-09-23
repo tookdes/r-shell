@@ -139,7 +139,6 @@ fn log_pty_loop_stats(
     }
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct BashVersion {
     pub(crate) major: u32,
@@ -910,12 +909,7 @@ impl SshClient {
                     }
                 }
 
-                log_pty_loop_stats(
-                    &diagnostic_connection_id,
-                    generation,
-                    &stats,
-                    true,
-                );
+                log_pty_loop_stats(&diagnostic_connection_id, generation, &stats, true);
                 tracing::info!(
                     "[PTY-STATS] task exited id={} gen={}",
                     diagnostic_connection_id,
