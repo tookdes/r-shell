@@ -303,6 +303,10 @@ impl WebSocketServer {
     }
 
     /// Handle a single WebSocket connection
+    ///
+    /// tungstenite's handshake callback has a deliberately rich HTTP response
+    /// error type; Clippy 1.99 flags that callback signature as result_large_err.
+    #[allow(clippy::result_large_err)]
     async fn handle_connection(&self, stream: TcpStream) -> Result<()> {
         // Loopback alone is not an authentication boundary: any local process,
         // and browser pages via localhost, can reach this listener. Require the
