@@ -374,7 +374,10 @@ mod shell_integration_tests {
             .await
             .expect("connect to Docker SSH server");
 
-        let pty = client.create_pty_session(80, 24).await.expect("create PTY");
+        let pty = client
+            .create_pty_session("test-pty", 1, 80, 24)
+            .await
+            .expect("create PTY");
         let initial_output = read_until(&pty, b"\x1b\\").await;
         assert!(
             String::from_utf8_lossy(&initial_output).contains("/home/testuser"),
@@ -650,5 +653,44 @@ mod compression_pref_tests {
         let prefs = compression_preferences(false);
         assert_eq!(prefs, &[NONE]);
         assert_eq!(negotiate(prefs, "none,zlib@openssh.com"), Some("none"));
+    }
+}
+
+#[cfg(test)]
+mod pty_loop_stats_tests {
+    use super::super::{PtyLoopStats, PTY_NON_DATA_WAKEUP_WARN_THRESHOLD};
+
+    #[test]
+    fn idle_stats_have_no_activity() {
+        let stats = PtyLoopStats::default();
+        assert!(!stats.has_activity());
+        assert!(!stats.suspicious_non_data_loop());
+    }
+
+    #[test]
+    fn non_data_wakeup_threshold_is_flagged() {
+        let stats = PtyLoopStats {
+            wait_wakeups: PTY_NON_DATA_WAKEUP_WARN_THRESHOLD,
+            window_adjusted_messages: PTY_NON_DATA_WAKEUP_WARN_THRESHOLD,
+            ..PtyLoopStats::default()
+        };
+
+        assert!(stats.has_activity());
+        assert_eq!(stats.non_data_wakeups(), PTY_NON_DATA_WAKEUP_WARN_THRESHOLD);
+        assert!(stats.suspicious_non_data_loop());
+    }
+
+    #[test]
+    fn real_output_suppresses_non_data_loop_warning() {
+        let mut stats = PtyLoopStats {
+            wait_wakeups: PTY_NON_DATA_WAKEUP_WARN_THRESHOLD,
+            window_adjusted_messages: PTY_NON_DATA_WAKEUP_WARN_THRESHOLD,
+            ..PtyLoopStats::default()
+        };
+        stats.record_data(128);
+
+        assert_eq!(stats.data_messages, 1);
+        assert_eq!(stats.data_bytes, 128);
+        assert!(!stats.suspicious_non_data_loop());
     }
 }
