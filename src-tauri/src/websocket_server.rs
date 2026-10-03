@@ -313,7 +313,10 @@ impl WebSocketServer {
         // per-launch token before reading any PTY/desktop protocol message.
         let expected = WEBSOCKET_TOKEN.get().cloned().unwrap_or_default();
         let ws_stream = accept_hdr_async(stream, |req: &Request, res: Response| {
-            let origin = req.headers().get("origin").and_then(|value| value.to_str().ok());
+            let origin = req
+                .headers()
+                .get("origin")
+                .and_then(|value| value.to_str().ok());
             match validate_handshake(origin, req.uri().query(), &expected) {
                 Ok(()) => Ok(res),
                 Err(reason) => {
@@ -889,10 +892,9 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    a.iter()
-        .zip(b)
-        .fold(0u8, |accumulator, (left, right)| accumulator | (left ^ right))
-        == 0
+    a.iter().zip(b).fold(0u8, |accumulator, (left, right)| {
+        accumulator | (left ^ right)
+    }) == 0
 }
 
 pub(crate) fn validate_handshake(
@@ -972,11 +974,7 @@ mod handshake_tests {
             Err("origin not allowed")
         );
         assert_eq!(
-            validate_handshake(
-                Some("null"),
-                Some("token=s3cr3t-t0k3n_ABC"),
-                TOKEN
-            ),
+            validate_handshake(Some("null"), Some("token=s3cr3t-t0k3n_ABC"), TOKEN),
             Err("origin not allowed")
         );
     }
@@ -1009,11 +1007,7 @@ mod handshake_tests {
     #[test]
     fn finds_token_among_other_query_parameters() {
         assert_eq!(
-            validate_handshake(
-                None,
-                Some("x=1&token=s3cr3t-t0k3n_ABC&y=2"),
-                TOKEN
-            ),
+            validate_handshake(None, Some("x=1&token=s3cr3t-t0k3n_ABC&y=2"), TOKEN),
             Ok(())
         );
     }
@@ -1025,8 +1019,9 @@ mod handshake_tests {
         assert_eq!(first.len(), 43);
         assert!(first
             .chars()
-            .all(|character| character.is_ascii_alphanumeric() || character == '-' || character == '_'));
+            .all(|character| character.is_ascii_alphanumeric()
+                || character == '-'
+                || character == '_'));
         assert_ne!(first, second);
     }
 }
-
