@@ -5,6 +5,7 @@ import { readText as readClipboardText, writeText as writeClipboardText } from '
 import { toast } from 'sonner';
 import { DesktopToolbar } from './desktop-toolbar';
 import { computeFitScale, translateCoordinates } from '@/lib/desktop-utils';
+import { getWebSocketUrl } from '@/lib/websocket-endpoint';
 import { Monitor, RefreshCw } from 'lucide-react';
 import { Button } from './ui/button';
 
@@ -64,16 +65,20 @@ export function DesktopViewer({
     let cancelled = false;
 
     const connect = async () => {
-      let wsPort = 9001;
+      let wsUrl: string;
       try {
-        wsPort = await invoke<number>('get_websocket_port');
-      } catch {
-        // fallback to default
+        wsUrl = await getWebSocketUrl();
+      } catch (error) {
+        if (!cancelled) {
+          console.error('[DesktopViewer] Failed to resolve WebSocket endpoint:', error);
+          setIsLoading(false);
+        }
+        return;
       }
 
       if (cancelled) return;
 
-      ws = new WebSocket(`ws://127.0.0.1:${wsPort}`);
+      ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -110,7 +115,7 @@ export function DesktopViewer({
       };
     };
 
-    connect();
+    void connect();
 
     return () => {
       cancelled = true;
