@@ -19,6 +19,7 @@ import { useTerminalCallbacks } from '../lib/terminal-callbacks-context';
 import { loadConnectionTransportSettings } from '../lib/connection-transport-settings';
 import { buildPtyInputFrame, encodeModifiedEnterCsiU, normalizePtyInput } from '../lib/pty-input';
 import { routePtyOutputFrame } from '../lib/pty-output-frame';
+import { getWebSocketUrl } from '../lib/websocket-endpoint';
 import {
   configureTerminalDiagnostics,
   flushTerminalDiagnostics,
@@ -405,6 +406,16 @@ export function PtyTerminal({
         return false;
       }
 
+      // Windows/Linux: xterm interprets Ctrl+V as the control byte 0x16
+      // instead of a clipboard paste. Route the plain shortcut through the
+      // existing clipboard path exactly once. macOS keeps native Cmd+V and
+      // literal Ctrl+V (quoted-insert) behavior.
+      if (!isMac && event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && key === 'v') {
+        event.preventDefault();
+        void pasteClipboardIntoPty();
+        return false;
+      }
+
       // Handle search shortcut
       if (modKey && key === 'f') {
         event.preventDefault();
@@ -570,18 +581,16 @@ export function PtyTerminal({
         onConnectionStatusChange?.(connectionId, 'connecting');
       }
       
-      // Wait for the backend to publish the bound WebSocket port (9001-9010).
-      // Never guess a fixed fallback — the server may have bound a different port.
-      let wsPort = 0;
+      // Wait for the backend to publish the authenticated WebSocket endpoint.
+      // Never guess a port or omit the per-launch token.
+      let wsUrl: string | null = null;
       for (let attempt = 0; attempt < 12; attempt += 1) {
         try {
-          wsPort = await invoke<number>('get_websocket_port');
-          if (wsPort > 0) {
-            break;
-          }
+          wsUrl = await getWebSocketUrl();
+          break;
         } catch (_error) {
           if (attempt === 11) {
-            term.write('\r\n\x1b[31m[Failed to resolve WebSocket port]\x1b[0m\r\n');
+            term.write('\r\n\x1b[31m[Failed to resolve WebSocket endpoint]\x1b[0m\r\n');
             connectionStatusRef.current = 'disconnected';
             onConnectionStatusChange?.(connectionId, 'disconnected');
             return;
@@ -589,15 +598,15 @@ export function PtyTerminal({
         }
         await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
       }
-      if (wsPort <= 0) {
-        term.write('\r\n\x1b[31m[WebSocket port unavailable]\x1b[0m\r\n');
+      if (!wsUrl) {
+        term.write('\r\n\x1b[31m[WebSocket endpoint unavailable]\x1b[0m\r\n');
         connectionStatusRef.current = 'disconnected';
         onConnectionStatusChange?.(connectionId, 'disconnected');
         return;
       }
-      
+
       console.log(`[PTY Terminal] [${connectionId}] Connecting to WebSocket...`);
-      const ws = new WebSocket(`ws://127.0.0.1:${wsPort}`);
+      const ws = new WebSocket(wsUrl);
       // Receive PTY output as ArrayBuffer so we can avoid the JSON overhead of
       // encoding Vec<u8> as integer arrays.  The backend sends binary output
       // frames with the format: [0x01][id_len: u16 BE][connection_id][payload]

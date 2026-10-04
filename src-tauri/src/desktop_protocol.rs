@@ -20,6 +20,10 @@ pub struct FrameUpdate {
 ///
 /// Both `RdpClient` and `VncClient` implement this trait so that the
 /// `ConnectionManager` and Tauri commands can work protocol-agnostically.
+// async-trait expands each Result-returning async method into a Future that
+// already carries #[must_use]. Clippy 1.99's double_must_use lint reports the
+// generated methods; the trait API itself has no redundant hand-written marker.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait DesktopProtocol: Send + Sync {
     /// Start the frame update loop, sending `FrameUpdate` messages via the

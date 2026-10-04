@@ -41,6 +41,7 @@ const mocks = vi.hoisted(() => {
     refresh = vi.fn();
     writeln = vi.fn();
     write = vi.fn((_data: string, callback?: () => void) => callback?.());
+    paste = vi.fn();
     onSelectionChange = vi.fn(() => ({ dispose: vi.fn() }));
     onLineFeed = vi.fn(() => ({ dispose: vi.fn() }));
     attachCustomKeyEventHandler = vi.fn();
@@ -121,7 +122,7 @@ vi.mock('@xterm/addon-search', () => ({
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({
-  invoke: vi.fn(async (command: string) => (command === 'get_websocket_port' ? 9001 : undefined)),
+  invoke: vi.fn(async (command: string) => (command === 'get_websocket_endpoint' ? { port: 9001, token: 'test-token' } : undefined)),
 }));
 
 vi.mock('@tauri-apps/plugin-clipboard-manager', () => ({
@@ -425,10 +426,10 @@ describe('PtyTerminal activation', () => {
     });
   });
 
-  it('lets xterm handle Ctrl+V paste without duplicate custom send', async () => {
+  it('pastes Ctrl+V exactly once on Windows/Linux', async () => {
     const { readText } = await import('@tauri-apps/plugin-clipboard-manager');
     const readTextMock = vi.mocked(readText);
-    readTextMock.mockClear();
+    readTextMock.mockResolvedValue('echo pasted-from-clipboard');
     Object.defineProperty(navigator, 'platform', {
       configurable: true,
       value: 'Win32',
@@ -444,13 +445,16 @@ describe('PtyTerminal activation', () => {
       key: 'v',
       ctrlKey: true,
       metaKey: false,
+      shiftKey: false,
+      altKey: false,
       preventDefault,
     } as unknown as KeyboardEvent);
     await flushPromises();
 
-    expect(handled).toBe(true);
-    expect(preventDefault).not.toHaveBeenCalled();
-    expect(readTextMock).not.toHaveBeenCalled();
+    expect(handled).toBe(false);
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(readTextMock).toHaveBeenCalledOnce();
+    expect(mocks.terminals[0].paste).toHaveBeenCalledWith('echo pasted-from-clipboard');
   });
 
   it('lets xterm handle Command+V paste without duplicate custom send on macOS', async () => {
