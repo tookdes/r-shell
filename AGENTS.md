@@ -4,8 +4,8 @@
 
 R-Shell is a modern desktop SSH client built with **React 19 + TypeScript** (frontend) and **Tauri 2 + Rust** (backend). It provides interactive terminal sessions, SFTP file management, system monitoring, and multi-tab session management in a VS Code-like layout.
 
-- **Repository**: `GOODBOY008/r-shell`
-- **Version**: 1.2.0
+- **Repository**: `tookdes/r-shell` (fork; upstream: `GOODBOY008/r-shell`)
+- **Version**: 2.7.0
 - **Package Manager**: pnpm (v9.15.4)
 - **Node Target**: ES2020
 - **Rust Edition**: 2021
@@ -75,8 +75,6 @@ pnpm test
 # Rust unit tests
 cd src-tauri && cargo test
 
-# E2E tests
-pnpm test:e2e
 ```
 
 ### Linting
@@ -241,7 +239,7 @@ VS Code-like resizable panel layout with presets:
 2. **PTY generation counters**: Each `StartPty` increments a generation counter. `Close` messages include the generation to prevent stale closes from killing newly created sessions (important for React component remounting).
 3. **Connection cancellation**: Pending connections can be cancelled via `CancellationToken`. Always clean up pending state.
 4. **Path alias**: Use `@/` imports in TypeScript (resolves to `src/`). Configured in both `tsconfig.json` and `vite.config.ts`.
-5. **Server key verification**: Currently accepts all server keys (`check_server_key` returns `Ok(true)`). Not for production SSH security.
+5. **Server key verification**: Uses TOFU-style known-hosts verification. Unknown and changed keys require explicit user confirmation; do not bypass this path when changing SSH connection code.
 6. **ESLint configured (v10 flat config)**: `eslint.config.js` uses `typescript-eslint` with type-aware checking, `react-hooks` v7, and `react-refresh`. Run `pnpm lint` to check, `pnpm lint:fix` to auto-fix. Test files and `src/components/ui/` are excluded or relaxed. Warnings are intentional for `no-unsafe-*` (Tauri invoke), `no-floating-promises` (fire-and-forget), and new react-hooks v7 rules (`set-state-in-effect`, `refs`, `purity`). When adding unused function parameters, prefix with `_`. When renaming destructured props to suppress unused warnings, use `{ propName: _propName }` syntax to keep the interface key intact.
 7. **`editor/` directory is empty**: `src-tauri/src/editor/` exists but contains no files — reserved for future use.
 8. **Release profile**: Rust release builds use LTO, single codegen unit, and symbol stripping for maximum optimization.
