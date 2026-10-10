@@ -1,7 +1,10 @@
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, configure, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IntegratedFileBrowser } from '../components/integrated-file-browser';
+
+// This file is integration-heavy on CI; give async DOM updates a realistic budget.
+configure({ asyncUtilTimeout: 5000 });
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
