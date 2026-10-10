@@ -602,8 +602,29 @@ fn ensure_safe_remote_path(path: &str) -> Result<(), String> {
 /// Escape a path for use inside a POSIX single-quoted shell argument.
 /// Single quotes cannot appear inside a single-quoted string, so we end the
 /// quote, emit the escaped quote, and reopen the quote: `'` → `'\''`.
-fn shell_escape_single_quoted(path: &str) -> String {
-    path.replace('\'', "'\\''")
+fn shell_escape_single_quoted(value: &str) -> String {
+    value.replace('\'', "'\\''")
+}
+
+fn parse_positive_pid(pid: &str) -> Result<u32, String> {
+    let parsed = pid
+        .parse::<u32>()
+        .map_err(|_| format!("Invalid process id: {pid:?}"))?;
+    if parsed == 0 {
+        return Err("Process id must be greater than zero".to_string());
+    }
+    Ok(parsed)
+}
+
+fn parse_signal_number(signal: Option<&str>) -> Result<u8, String> {
+    let raw = signal.unwrap_or("15");
+    let parsed = raw
+        .parse::<u8>()
+        .map_err(|_| format!("Invalid signal number: {raw:?}"))?;
+    if !(1..=64).contains(&parsed) {
+        return Err(format!("Signal number out of range: {parsed}"));
+    }
+    Ok(parsed)
 }
 
 #[tauri::command]
@@ -911,8 +932,11 @@ pub async fn kill_process(
 
     let client = connection.read().await;
 
-    // Default to SIGTERM (15), can also use SIGKILL (9)
-    let sig = signal.unwrap_or_else(|| "15".to_string());
+    // Keep the shell command numeric-only at this boundary. The UI currently
+    // sends SIGTERM (15), but accepting the portable POSIX/Linux numeric range
+    // preserves existing callers without allowing shell syntax through.
+    let pid = parse_positive_pid(&pid)?;
+    let sig = parse_signal_number(signal.as_deref())?;
     let command = format!("kill -{} {}", sig, pid);
 
     match client.execute_command(&command).await {
@@ -959,7 +983,11 @@ pub async fn tail_log(
     let client = connection.read().await;
 
     let line_count = lines.unwrap_or(50);
-    let command = format!("tail -n {} '{}'", line_count, log_path);
+    let command = format!(
+        "tail -n {} '{}'",
+        line_count,
+        shell_escape_single_quoted(&log_path)
+    );
 
     match client.execute_command(&command).await {
         Ok(output) => Ok(CommandResponse {
@@ -1097,7 +1125,7 @@ pub async fn discover_log_sources(
         let file_paths: Vec<String> = sources
             .iter()
             .filter(|s| s.source_type == "file")
-            .map(|s| format!("'{}'", s.path))
+            .map(|s| format!("'{}'", shell_escape_single_quoted(&s.path)))
             .collect();
 
         if !file_paths.is_empty() {
@@ -1200,10 +1228,19 @@ pub async fn read_log(
     let cmd = match source_type.as_str() {
         "journal" => format!(
             "journalctl -u '{}' -n {} --no-pager 2>/dev/null",
-            path, line_count
+            shell_escape_single_quoted(&path),
+            line_count
         ),
-        "docker" => format!("docker logs --tail {} '{}' 2>&1", line_count, path),
-        _ => format!("tail -n {} '{}' 2>/dev/null", line_count, path),
+        "docker" => format!(
+            "docker logs --tail {} '{}' 2>&1",
+            line_count,
+            shell_escape_single_quoted(&path)
+        ),
+        _ => format!(
+            "tail -n {} '{}' 2>/dev/null",
+            line_count,
+            shell_escape_single_quoted(&path)
+        ),
     };
 
     match client.execute_command(&cmd).await {
@@ -1237,7 +1274,8 @@ pub async fn search_log(
     let client = connection.read().await;
 
     let limit = max_results.unwrap_or(500);
-    let escaped = pattern.replace('\'', "'\\''");
+    let escaped_pattern = shell_escape_single_quoted(&pattern);
+    let escaped_path = shell_escape_single_quoted(&path);
     let grep_flag = if is_regex.unwrap_or(false) {
         "-nE"
     } else {
@@ -1247,15 +1285,15 @@ pub async fn search_log(
     let cmd = match source_type.as_str() {
         "journal" => format!(
             "journalctl -u '{}' --no-pager 2>/dev/null | grep {} -i '{}' | tail -n {}",
-            path, grep_flag, escaped, limit
+            escaped_path, grep_flag, escaped_pattern, limit
         ),
         "docker" => format!(
             "docker logs '{}' 2>&1 | grep {} -i '{}' | tail -n {}",
-            path, grep_flag, escaped, limit
+            escaped_path, grep_flag, escaped_pattern, limit
         ),
         _ => format!(
             "grep {} -i '{}' '{}' 2>/dev/null | tail -n {}",
-            grep_flag, escaped, path, limit
+            grep_flag, escaped_pattern, escaped_path, limit
         ),
     };
 
@@ -3722,6 +3760,27 @@ mod local_fs_tests {
             "nested/file.txt"
         )
         .is_err());
+    }
+
+    #[test]
+    fn shell_single_quote_escape_is_safe_for_posix_arguments() {
+        assert_eq!(
+            shell_escape_single_quoted("/var/log/app's log.txt"),
+            "/var/log/app'\\''s log.txt"
+        );
+    }
+
+    #[test]
+    fn process_command_numbers_reject_shell_syntax() {
+        assert_eq!(parse_positive_pid("123").unwrap(), 123);
+        assert!(parse_positive_pid("0").is_err());
+        assert!(parse_positive_pid("123; reboot").is_err());
+
+        assert_eq!(parse_signal_number(None).unwrap(), 15);
+        assert_eq!(parse_signal_number(Some("9")).unwrap(), 9);
+        assert!(parse_signal_number(Some("15; reboot")).is_err());
+        assert!(parse_signal_number(Some("0")).is_err());
+        assert!(parse_signal_number(Some("65")).is_err());
     }
 
     #[tokio::test]
