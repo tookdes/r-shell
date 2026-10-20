@@ -1,5 +1,10 @@
-import { describe, it, expect } from 'vitest';
-import { buildPtyInputFrame, encodeModifiedEnterCsiU, normalizePtyInput } from '../lib/pty-input';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  buildPtyInputFrame,
+  encodeModifiedEnterCsiU,
+  normalizePtyInput,
+  waitForPtySendCapacity,
+} from '../lib/pty-input';
 
 describe('buildPtyInputFrame', () => {
   it('preserves binary protocol bytes exactly', () => {
@@ -81,5 +86,53 @@ describe('encodeModifiedEnterCsiU (CSI u modified-Enter)', () => {
     expect(
       encodeModifiedEnterCsiU({ shiftKey: false, altKey: false, ctrlKey: false, metaKey: false }),
     ).toBe('\x1b[13;1u');
+  });
+});
+
+
+describe('waitForPtySendCapacity', () => {
+  it('returns immediately while the WebSocket queue is below the high-water mark', async () => {
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    const socket = { readyState: 1, bufferedAmount: 512 };
+
+    await expect(
+      waitForPtySendCapacity(socket, {
+        highWaterBytes: 1024,
+        lowWaterBytes: 256,
+        sleep,
+      }),
+    ).resolves.toBe(true);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('waits for a large WebSocket queue to drain to the low-water mark', async () => {
+    const socket = { readyState: 1, bufferedAmount: 2048 };
+    const sleep = vi.fn().mockImplementation(async () => {
+      socket.bufferedAmount = 128;
+    });
+
+    await expect(
+      waitForPtySendCapacity(socket, {
+        highWaterBytes: 1024,
+        lowWaterBytes: 256,
+        sleep,
+      }),
+    ).resolves.toBe(true);
+    expect(sleep).toHaveBeenCalledOnce();
+  });
+
+  it('stops waiting if the WebSocket closes while draining', async () => {
+    const socket = { readyState: 1, bufferedAmount: 2048 };
+    const sleep = vi.fn().mockImplementation(async () => {
+      socket.readyState = 3;
+    });
+
+    await expect(
+      waitForPtySendCapacity(socket, {
+        highWaterBytes: 1024,
+        lowWaterBytes: 256,
+        sleep,
+      }),
+    ).resolves.toBe(false);
   });
 });
