@@ -17,7 +17,12 @@ import { toast } from 'sonner';
 import { signalReady } from '../lib/restoration-manager';
 import { useTerminalCallbacks } from '../lib/terminal-callbacks-context';
 import { loadConnectionTransportSettings } from '../lib/connection-transport-settings';
-import { buildPtyInputFrame, encodeModifiedEnterCsiU, normalizePtyInput } from '../lib/pty-input';
+import {
+  buildPtyInputFrame,
+  encodeModifiedEnterCsiU,
+  normalizePtyInput,
+  waitForPtySendCapacity,
+} from '../lib/pty-input';
 import { routePtyOutputFrame } from '../lib/pty-output-frame';
 import { getWebSocketUrl } from '../lib/websocket-endpoint';
 import {
@@ -202,8 +207,12 @@ export function PtyTerminal({
     }
 
     const frame = buildPtyInputFrame(connectionIdBytesRef.current!, dataBytes);
-    ws.send(frame.buffer);
-    return true;
+    try {
+      ws.send(frame.buffer);
+      return true;
+    } catch (_error) {
+      return false;
+    }
   }, [connectionId]);
 
   const sendInputToPty = React.useCallback((data: string): boolean => {
@@ -756,7 +765,29 @@ export function PtyTerminal({
       // it is never buffered and never routed through the sentry while idle.
       // The sentry only takes over when a real ZMODEM session is active.
       void createZmodemTransferController({
-        send: sendRawInputToPty,
+        send(bytes) {
+          // A ZMODEM session belongs to the WebSocket that detected it. Never
+          // spill queued protocol bytes into a replacement socket after reconnect.
+          if (wsRef.current !== ws || ws.readyState !== WebSocket.OPEN) {
+            return false;
+          }
+          const frame = buildPtyInputFrame(connectionIdBytesRef.current!, bytes);
+          try {
+            ws.send(frame.buffer);
+            return true;
+          } catch (_error) {
+            return false;
+          }
+        },
+        async waitForSendDrain() {
+          if (wsRef.current !== ws || ws.readyState !== WebSocket.OPEN) {
+            throw new Error(i18n.t('ptyTerminal.zmodem.socketClosed'));
+          }
+          const ready = await waitForPtySendCapacity(ws);
+          if (!ready || wsRef.current !== ws) {
+            throw new Error(i18n.t('ptyTerminal.zmodem.socketClosed'));
+          }
+        },
         writeTerminal(bytes) {
           if (bytes.length > 0) {
             enqueueOutput(outputDecoder.decode(bytes, { stream: true }), 0);
