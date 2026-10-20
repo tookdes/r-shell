@@ -6,12 +6,38 @@ describe('createZmodemTransferController output routing', () => {
   let onDetectCapture: ((detection: unknown) => void) | undefined;
   let writeTerminal: ReturnType<typeof vi.fn>;
   let sendRaw: ReturnType<typeof vi.fn>;
+  let waitForSendDrain: ReturnType<typeof vi.fn>;
+  let mockFileOffset = 0;
+  const mockFileSize = 3 * 64 * 1024;
 
   beforeEach(async () => {
     vi.resetModules();
     onDetectCapture = undefined;
     writeTerminal = vi.fn();
     sendRaw = vi.fn().mockReturnValue(true);
+    waitForSendDrain = vi.fn().mockResolvedValue(undefined);
+    mockFileOffset = 0;
+
+    vi.doMock('@tauri-apps/plugin-dialog', () => ({
+      open: vi.fn().mockResolvedValue('/tmp/large.bin'),
+      save: vi.fn(),
+    }));
+    vi.doMock('@tauri-apps/plugin-fs', () => ({
+      SeekMode: { Start: 0 },
+      stat: vi.fn().mockResolvedValue({ size: mockFileSize, mtime: null }),
+      open: vi.fn().mockImplementation(async () => ({
+        async read(buffer: Uint8Array) {
+          if (mockFileOffset >= mockFileSize) return null;
+          const bytesRead = Math.min(buffer.length, mockFileSize - mockFileOffset);
+          buffer.fill(0x5a, 0, bytesRead);
+          mockFileOffset += bytesRead;
+          return bytesRead;
+        },
+        seek: vi.fn().mockResolvedValue(0),
+        write: vi.fn().mockResolvedValue(0),
+        close: vi.fn().mockResolvedValue(undefined),
+      })),
+    }));
 
     vi.doMock('zmodem.js', () => {
       class MockSentry {
@@ -43,6 +69,7 @@ describe('createZmodemTransferController output routing', () => {
     const { createZmodemTransferController } = await import('../lib/zmodem-transfer');
     controller = await createZmodemTransferController({
       send: sendRaw,
+      waitForSendDrain,
       writeTerminal,
       setActive: vi.fn(),
       notifySuccess: vi.fn(),
@@ -82,6 +109,17 @@ describe('createZmodemTransferController output routing', () => {
     return deny;
   }
 
+  function detectSend(session: object) {
+    const deny = vi.fn();
+    onDetectCapture?.({
+      get_session_role: () => 'send',
+      confirm: () => session,
+      deny,
+      is_valid: () => true,
+    });
+    return deny;
+  }
+
   it('does not echo terminal output while no ZMODEM session is active', () => {
     controller.consume(new Uint8Array([0x1b, 0x5b, 0x48, 0x61]));
     expect(writeTerminal).not.toHaveBeenCalled();
@@ -107,6 +145,36 @@ describe('createZmodemTransferController output routing', () => {
     controller.consume(new Uint8Array([0x1b, 0x5b, 0x48, 0x62]));
     expect(writeTerminal).toHaveBeenCalled();
     expect(Array.from(writeTerminal.mock.calls[0][0] as Uint8Array)).toEqual([0x1b, 0x5b, 0x48, 0x62]);
+  });
+
+  it('waits for transport drain between large-file send chunks', async () => {
+    let sessionEnd: (() => void) | undefined;
+    const transfer = {
+      get_offset: vi.fn().mockReturnValue(0),
+      send: vi.fn(),
+      end: vi.fn().mockResolvedValue(undefined),
+    };
+    const session = {
+      on: vi.fn((event: string, handler: () => void) => {
+        if (event === 'session_end') sessionEnd = handler;
+      }),
+      send_offer: vi.fn().mockResolvedValue(transfer),
+      close: vi.fn().mockImplementation(async () => {
+        sessionEnd?.();
+      }),
+      has_ended: vi.fn().mockReturnValue(false),
+      abort: vi.fn(),
+    };
+
+    expect(detectSend(session)).not.toHaveBeenCalled();
+
+    await vi.waitFor(() => {
+      expect(session.close).toHaveBeenCalledOnce();
+    });
+
+    expect(transfer.send).toHaveBeenCalledTimes(2);
+    expect(transfer.end).toHaveBeenCalledOnce();
+    expect(waitForSendDrain).toHaveBeenCalledTimes(3);
   });
 
   it('can start another ZMODEM session after a silent abort', () => {

@@ -35,6 +35,55 @@ export function buildPtyInputFrame(
   return frame;
 }
 
+export interface PtySendBufferOptions {
+  highWaterBytes?: number;
+  lowWaterBytes?: number;
+  pollIntervalMs?: number;
+  openReadyState?: number;
+  sleep?: (milliseconds: number) => Promise<void>;
+}
+
+const PTY_SEND_HIGH_WATER_BYTES = 1024 * 1024;
+const PTY_SEND_LOW_WATER_BYTES = 256 * 1024;
+const PTY_SEND_BUFFER_POLL_MS = 4;
+
+/**
+ * Apply bounded backpressure to high-volume binary PTY input.
+ *
+ * The browser WebSocket API queues send() calls in memory. ZMODEM can read a
+ * local file much faster than SSH can drain it, so large transfers must pause
+ * once the socket queue grows instead of buffering the entire remaining file.
+ */
+export async function waitForPtySendCapacity(
+  socket: { readonly bufferedAmount: number; readonly readyState: number },
+  options: PtySendBufferOptions = {},
+): Promise<boolean> {
+  const highWaterBytes = options.highWaterBytes ?? PTY_SEND_HIGH_WATER_BYTES;
+  const lowWaterBytes = options.lowWaterBytes ?? PTY_SEND_LOW_WATER_BYTES;
+  const pollIntervalMs = options.pollIntervalMs ?? PTY_SEND_BUFFER_POLL_MS;
+  const openReadyState = options.openReadyState ?? 1;
+  const sleep =
+    options.sleep ??
+    ((milliseconds: number) =>
+      new Promise<void>((resolve) => {
+        window.setTimeout(resolve, milliseconds);
+      }));
+
+  if (lowWaterBytes < 0 || highWaterBytes < lowWaterBytes) {
+    throw new RangeError('Invalid PTY WebSocket send-buffer thresholds');
+  }
+
+  if (socket.readyState !== openReadyState) return false;
+  if (socket.bufferedAmount <= highWaterBytes) return true;
+
+  while (socket.bufferedAmount > lowWaterBytes) {
+    await sleep(pollIntervalMs);
+    if (socket.readyState !== openReadyState) return false;
+  }
+
+  return true;
+}
+
 /** Modifier bitmask used by CSI u (kitty keyboard protocol) key sequences. */
 export interface KeyModifiers {
   shiftKey: boolean;
