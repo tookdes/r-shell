@@ -12,6 +12,7 @@ const SEND_CHUNK_SIZE = 64 * 1024;
 
 export interface ZmodemTransferCallbacks {
   send(bytes: Uint8Array): boolean;
+  waitForSendDrain?(): Promise<void>;
   writeTerminal(bytes: Uint8Array): void;
   setActive(active: boolean): void;
   notifySuccess(message: string): void;
@@ -88,6 +89,7 @@ async function sendOneFile(
   path: string,
   filesRemaining: number,
   bytesRemaining: number,
+  waitForSendDrain?: () => Promise<void>,
 ): Promise<boolean> {
   const info = await stat(path);
   const transfer = await session.send_offer({
@@ -111,20 +113,31 @@ async function sendOneFile(
       const chunk = buffer.subarray(0, bytesRead);
       offset += bytesRead;
       if (offset >= info.size) {
+        // Keep the final packet behind any previously queued WebSocket data.
+        // transfer.end() waits for the remote ZRINIT, but the WebSocket send()
+        // calls inside zmodem.js are synchronous and otherwise unbounded.
+        await waitForSendDrain?.();
         await transfer.end(chunk);
       } else {
         transfer.send(chunk);
+        await waitForSendDrain?.();
       }
     }
     if (offset < info.size) throw new Error(`Unexpected end of file while reading ${path}`);
-    if (start === info.size) await transfer.end();
+    if (start === info.size) {
+      await waitForSendDrain?.();
+      await transfer.end();
+    }
   } finally {
     await file.close();
   }
   return true;
 }
 
-async function selectAndSendFiles(session: Session): Promise<{ sent: number; cancelled: boolean }> {
+async function selectAndSendFiles(
+  session: Session,
+  waitForSendDrain?: () => Promise<void>,
+): Promise<{ sent: number; cancelled: boolean }> {
   const selected = await openDialog({
     title: i18n.t('ptyTerminal.zmodem.selectFilesTitle'),
     multiple: true,
@@ -137,7 +150,17 @@ async function selectAndSendFiles(session: Session): Promise<{ sent: number; can
   let bytesRemaining = infos.reduce((total, info) => total + info.size, 0);
   let sent = 0;
   for (let index = 0; index < paths.length; index += 1) {
-    if (await sendOneFile(session, paths[index], paths.length - index, bytesRemaining)) sent += 1;
+    if (
+      await sendOneFile(
+        session,
+        paths[index],
+        paths.length - index,
+        bytesRemaining,
+        waitForSendDrain,
+      )
+    ) {
+      sent += 1;
+    }
     bytesRemaining -= infos[index].size;
   }
   await session.close();
@@ -212,7 +235,7 @@ export async function createZmodemTransferController(
       sessionEnded = true;
       finish(session);
     });
-    void selectAndSendFiles(session)
+    void selectAndSendFiles(session, callbacks.waitForSendDrain)
       .then(({ sent, cancelled }) => {
         if (cancelled) {
           session.abort();
