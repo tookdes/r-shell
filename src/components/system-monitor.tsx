@@ -36,6 +36,8 @@ interface SystemStats {
 
 interface SystemMonitorProps {
   connectionId?: string;
+  /** Visible sidebar tab; hidden panels retain state but stop remote polling. */
+  active?: boolean;
 }
 
 interface Process {
@@ -153,7 +155,7 @@ const getProgressColor = (usage: number): string => {
   return '[&>div]:bg-green-500';
 };
 
-export function SystemMonitor({ connectionId }: SystemMonitorProps) {
+export function SystemMonitor({ connectionId, active = true }: SystemMonitorProps) {
   const { t } = useTranslation();
   const [stats, setStats] = useState<SystemStats>({
     cpu: 0,
@@ -288,6 +290,7 @@ export function SystemMonitor({ connectionId }: SystemMonitorProps) {
       setProcesses([]);
       return;
     }
+    if (!active) return;
 
     let cancelled = false;
 
@@ -320,7 +323,7 @@ export function SystemMonitor({ connectionId }: SystemMonitorProps) {
       clearInterval(processInterval);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchSystemStats/fetchProcesses are stable inline fns; adding them causes infinite re-renders
-  }, [connectionId, processSortBy]);
+  }, [connectionId, processSortBy, active]);
 
   // Fetch disk usage data.
   // Same isCancelled / throw-on-error contract as fetchSystemStats.
@@ -355,6 +358,7 @@ export function SystemMonitor({ connectionId }: SystemMonitorProps) {
   // if missed: user waits a full minute for first data).
   useEffect(() => {
     if (!connectionId) return;
+    if (!active) return;
 
     let cancelled = false;
 
@@ -373,7 +377,7 @@ export function SystemMonitor({ connectionId }: SystemMonitorProps) {
 
     return () => { cancelled = true; clearInterval(interval); };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchDiskUsage is a stable inline fn; adding it causes infinite re-renders
-  }, [connectionId]);
+  }, [connectionId, active]);
 
   // GPU Stats fetching.
   // Same isCancelled / throw-on-error contract as fetchSystemStats.
@@ -427,6 +431,7 @@ export function SystemMonitor({ connectionId }: SystemMonitorProps) {
       setGpuDetectionDone(false);
       return;
     }
+    if (!active) return;
 
     let cancelled = false;
     setGpuDetectionDone(false);
@@ -453,11 +458,11 @@ export function SystemMonitor({ connectionId }: SystemMonitorProps) {
     });
 
     return () => { cancelled = true; };
-  }, [connectionId]);
-
+  }, [connectionId, active]);
   // GPU stats polling - only if GPU detected
   useEffect(() => {
     if (!connectionId || !gpuDetection?.available) return;
+    if (!active) return;
 
     let cancelled = false;
 
@@ -475,7 +480,7 @@ export function SystemMonitor({ connectionId }: SystemMonitorProps) {
 
     return () => { cancelled = true; clearInterval(interval); };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchGpuStats is a stable inline fn; adding it causes infinite re-renders
-  }, [connectionId, gpuDetection?.available]);
+  }, [connectionId, gpuDetection?.available, active]);
 
   const [latencyData, setLatencyData] = useState<LatencyData[]>([]);
   const [networkUsage, setNetworkUsage] = useState<NetworkUsage>({
@@ -503,6 +508,7 @@ export function SystemMonitor({ connectionId }: SystemMonitorProps) {
       setInterfaceBandwidthMap(new Map());
       return;
     }
+    if (!active) return;
 
     let cancelled = false;
 
@@ -619,7 +625,7 @@ export function SystemMonitor({ connectionId }: SystemMonitorProps) {
     }, 5000);
 
     return () => { cancelled = true; clearInterval(interval); };
-  }, [connectionId, selectedInterface]);
+  }, [connectionId, selectedInterface, active]);
 
   // Network latency monitoring - fetch real ping data
   // OPTIMIZED: Longer interval, use idle callback
@@ -629,6 +635,7 @@ export function SystemMonitor({ connectionId }: SystemMonitorProps) {
       setLatencyData([]);
       return;
     }
+    if (!active) return;
 
     let cancelled = false;
 
@@ -670,7 +677,7 @@ export function SystemMonitor({ connectionId }: SystemMonitorProps) {
     }, 10000);
 
     return () => { cancelled = true; clearInterval(interval); };
-  }, [connectionId]);
+  }, [connectionId, active]);
 
 
 

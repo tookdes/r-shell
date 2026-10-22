@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { applyLanguageFromPreference } from './lib/i18n';
+import { folderPathFromArg } from './lib/connection-folder';
+import { useLazyTabs } from './lib/use-lazy-tabs';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { HostKeyDialog } from './components/host-key-dialog';
@@ -111,7 +113,7 @@ function AppContent() {
   });
 
   // Right sidebar tab & log monitor integration
-  const [rightSidebarTab, setRightSidebarTab] = useState("monitor");
+  const rightSidebar = useLazyTabs("monitor");
   const [externalLogPath, setExternalLogPath] = useState<string | undefined>();
   const [externalLogPathKey, setExternalLogPathKey] = useState(0);
 
@@ -140,6 +142,13 @@ function AppContent() {
   const allTabs = useMemo(() => {
     return Object.values(state.groups).flatMap(g => g.tabs);
   }, [state.groups]);
+
+  // Async SSH connects can settle after their tab is closed. Keep a live view
+  // of tab ids so stale completions stay silent instead of reopening dialogs.
+  const liveTabIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    liveTabIdsRef.current = new Set(allTabs.map(tab => tab.id));
+  }, [allTabs]);
 
   // Memoized set of active connection IDs — stable reference prevents
   // ConnectionManager from rebuilding its tree on every parent render.
@@ -246,13 +255,23 @@ function AppContent() {
   }, [setLeftSidebarVisible, setRightSidebarVisible]);
 
   const handleTabClose = useCallback(async (tabId: string) => {
+    // Mark it gone synchronously so any in-flight connect completion is stale
+    // even before React commits the reducer update.
+    liveTabIdsRef.current.delete(tabId);
+
     // Find which group contains this tab, tear down backend resources, then remove it.
     for (const group of Object.values(state.groups)) {
       const tab = group.tabs.find(t => t.id === tabId);
       if (!tab) continue;
 
       try {
-        if (tab.tabType === 'file-browser') {
+        if (
+          tab.connectionStatus === 'pending' &&
+          tab.tabType !== 'file-browser' &&
+          tab.tabType !== 'desktop'
+        ) {
+          await invoke('ssh_cancel_connect', { connection_id: tabId });
+        } else if (tab.tabType === 'file-browser') {
           if (tab.protocol === 'SFTP') {
             try { await invoke('abort_connection_transfers', { connectionId: tabId }); } catch { /* ignore */ }
             await invoke('sftp_standalone_disconnect', { connection_id: tabId });
@@ -838,6 +857,7 @@ function AppContent() {
           reconnectCount: 0,
         };
         dispatch({ type: 'ADD_TAB', groupId: state.activeGroupId, tab: newTab });
+        liveTabIdsRef.current.add(sessionId);
 
         console.debug('[SSH] Connecting:', { id: connectionData.id, host: connectionData.host, port: connectionData.port, authMethod: connectionData.authMethod });
 
@@ -867,6 +887,10 @@ function AppContent() {
           );
 
           if (result.success) {
+            if (!liveTabIdsRef.current.has(sessionId)) {
+              void invoke('ssh_disconnect', { connection_id: sessionId }).catch(() => {});
+              return false;
+            }
             ConnectionStorageManager.updateLastConnected(connection.id);
             // Switch to 'connecting' — this mounts PtyTerminal which opens WebSocket
             // and sends StartPty. The backend SSH session is ready by now.
@@ -875,6 +899,9 @@ function AppContent() {
           } else {
             console.error('SSH connection failed:', result.error);
             dispatch({ type: 'UPDATE_TAB_STATUS', tabId: sessionId, status: 'disconnected' });
+            if (!liveTabIdsRef.current.has(sessionId)) {
+              return false;
+            }
             toast.error(t('app.connectionFailed'), {
               description: result.error || t('connectionDialog.toast.connectionFailedDesc'),
             });
@@ -886,6 +913,9 @@ function AppContent() {
         } catch (error) {
           console.error('Error connecting to SSH:', error);
           dispatch({ type: 'UPDATE_TAB_STATUS', tabId: sessionId, status: 'disconnected' });
+          if (!liveTabIdsRef.current.has(sessionId)) {
+            return false;
+          }
           toast.error(t('app.connectionError'), {
             description: error instanceof Error ? error.message : t('app.connectionErrorDesc'),
           });
@@ -923,6 +953,18 @@ function AppContent() {
     const group = state.groups[groupId];
     if (!group) return;
     for (const tab of group.tabs) {
+      liveTabIdsRef.current.delete(tab.id);
+      if (
+        tab.connectionStatus === 'pending' &&
+        tab.tabType !== 'file-browser' &&
+        tab.tabType !== 'desktop'
+      ) {
+        try {
+          await invoke('ssh_cancel_connect', { connection_id: tab.id });
+        } catch {
+          // Already settled; reducer cleanup still proceeds.
+        }
+      }
       // Disconnect SFTP/FTP sessions when closing file-browser tabs
       if (tab.tabType === 'file-browser') {
         try {
@@ -939,8 +981,8 @@ function AppContent() {
     dispatch({ type: 'CLOSE_ALL_TABS', groupId });
   }, [state.groups, dispatch]);
 
-  const handleNewTab = useCallback((folderPath?: string) => {
-    setConnectionInitialFolder(folderPath);
+  const handleNewTab = useCallback((folderPath?: unknown) => {
+    setConnectionInitialFolder(folderPathFromArg(folderPath));
     setConnectionDialogOpen(true);
     setEditingConnection(null);
     setPendingConnectionId(null);
@@ -1249,13 +1291,13 @@ function AppContent() {
   const handleOpenInLogMonitor = useCallback((filePath: string) => {
     setExternalLogPath(filePath);
     setExternalLogPathKey((k) => k + 1);
-    setRightSidebarTab("logs");
+    rightSidebar.select("logs");
     // Ensure right sidebar is visible
     if (!layout.rightSidebarVisible) {
       toggleRightSidebar();
     }
     toast.success(t('app.openingInLogMonitor', { filename: filePath.split("/").pop() }));
-  }, [layout.rightSidebarVisible, toggleRightSidebar, t]);
+  }, [rightSidebar.select, layout.rightSidebarVisible, toggleRightSidebar, t]);
 
   // Handler: open a remote file in a new Tauri window.
   // The window is centered on whichever monitor the parent window currently
@@ -2188,7 +2230,7 @@ function AppContent() {
                 maxSize={30}
                 onResize={(size) => setRightSidebarSize(size)}
               >
-                <Tabs value={rightSidebarTab} onValueChange={setRightSidebarTab} className="h-full flex flex-col">
+                <Tabs value={rightSidebar.active} onValueChange={rightSidebar.select} className="h-full flex flex-col">
                   <TabsList className="inline-flex w-auto mx-1 mt-2">
                     <TabsTrigger value="monitor" className="text-xs px-2">{t('app.monitor')}</TabsTrigger>
                     <TabsTrigger value="logs" className="text-xs px-2">{t('app.logs')}</TabsTrigger>
@@ -2197,21 +2239,26 @@ function AppContent() {
                   <div className="flex-1 mt-0 overflow-hidden relative">
                     <TabsContent value="monitor" forceMount className="absolute inset-0 mt-0 data-[state=inactive]:hidden">
                       <div className="h-full overflow-hidden px-1 py-2">
-                        {activeConnection ? (
+                        {activeConnection && rightSidebar.mounted.has('monitor') ? (
                           <ErrorBoundary label={t('app.systemMonitor')}>
-                            <SystemMonitor connectionId={activeConnection.connectionId} />
+                            <SystemMonitor
+                              connectionId={activeConnection.connectionId}
+                              active={rightSidebar.active === 'monitor'}
+                            />
                           </ErrorBoundary>
                         ) : null}
                       </div>
                     </TabsContent>
 
                     <TabsContent value="logs" forceMount className="absolute inset-0 mt-0 data-[state=inactive]:hidden">
-                      {activeConnection ? (
+                      {activeConnection && rightSidebar.mounted.has('logs') ? (
                         <ErrorBoundary label={t('app.logMonitor')}>
                           <LogMonitor
                             connectionId={activeConnection.connectionId}
                             externalLogPath={externalLogPath}
                             externalLogPathKey={externalLogPathKey}
+                            active={rightSidebar.active === 'logs'}
+                            connectionStatus={activeConnection.status}
                           />
                         </ErrorBoundary>
                       ) : null}

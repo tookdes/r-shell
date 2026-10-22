@@ -15,6 +15,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/
 import { Separator } from './ui/separator';
 import { ConnectionProfileManager, type ConnectionProfile } from '../lib/connection-profiles';
 import { ConnectionStorageManager } from '../lib/connection-storage';
+import { folderPathFromArg } from '../lib/connection-folder';
 import { buildTransportInvokeFields } from '../lib/connection-transport-settings';
 import { encryptConnectionSecrets } from '../lib/secrets';
 import { toast } from 'sonner';
@@ -182,9 +183,11 @@ export function ConnectionDialog({
       const folderPaths = folders.map(f => f.path).sort();
       setAvailableFolders(folderPaths);
 
-      // Pre-select folder when initialFolder is provided (new connection from folder context menu)
-      if (initialFolder && !editingConnection) {
-        setConnectionFolder(initialFolder);
+      // Only a real non-empty string is a folder. Direct onClick wiring can
+      // otherwise leak a MouseEvent into this prop.
+      const presetFolder = folderPathFromArg(initialFolder);
+      if (presetFolder && !editingConnection) {
+        setConnectionFolder(presetFolder);
       }
 
       // Load editing connection data into config when dialog opens.

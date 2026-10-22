@@ -694,3 +694,22 @@ mod pty_loop_stats_tests {
         assert!(!stats.suspicious_non_data_loop());
     }
 }
+
+#[cfg(test)]
+mod auth_timeout_tests {
+    use super::super::{auth_timeout_for, MIN_AUTH_TIMEOUT_SECS};
+    use std::time::Duration;
+
+    #[test]
+    fn authentication_timeout_has_a_floor_and_respects_larger_settings() {
+        assert_eq!(
+            auth_timeout_for(3),
+            Duration::from_secs(MIN_AUTH_TIMEOUT_SECS)
+        );
+        assert_eq!(
+            auth_timeout_for(MIN_AUTH_TIMEOUT_SECS),
+            Duration::from_secs(MIN_AUTH_TIMEOUT_SECS)
+        );
+        assert_eq!(auth_timeout_for(45), Duration::from_secs(45));
+    }
+}
