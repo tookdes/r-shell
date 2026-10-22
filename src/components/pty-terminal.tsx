@@ -101,6 +101,10 @@ export function PtyTerminal({
   
   // Search bar state
   const [searchVisible, setSearchVisible] = React.useState(false);
+  const searchVisibleRef = React.useRef(false);
+  React.useEffect(() => {
+    searchVisibleRef.current = searchVisible;
+  }, [searchVisible]);
   const [searchFocusTrigger, setSearchFocusTrigger] = React.useState(0);
   const searchStateRef = React.useRef<TerminalSearchState>({ query: '', caseSensitive: false, regex: false });
   const [hasSelection, setHasSelection] = React.useState(false);
@@ -436,8 +440,12 @@ export function PtyTerminal({
       // Intentionally do NOT intercept Ctrl/Cmd+A: shells use it for "beginning of line".
       // Select-all remains available via the terminal context menu when implemented.
       
-      // Handle F3 for search navigation
+      // Search navigation owns F3 only while the search bar is open.
+      // Otherwise remote TUIs/applications must receive F3 unchanged.
       if (event.key === 'F3') {
+        if (!searchVisibleRef.current) {
+          return true;
+        }
         event.preventDefault();
         const search = searchRef.current;
         const { query, caseSensitive, regex } = searchStateRef.current;
@@ -448,7 +456,6 @@ export function PtyTerminal({
             search.findNext(query, { caseSensitive, regex });
           }
         } else {
-          setSearchVisible(true);
           setSearchFocusTrigger(prev => prev + 1);
         }
         return false;
