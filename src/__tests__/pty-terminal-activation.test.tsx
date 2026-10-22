@@ -426,6 +426,28 @@ describe('PtyTerminal activation', () => {
     });
   });
 
+  it('passes F3 through to the remote application while search is closed', async () => {
+    renderTerminal(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60);
+    });
+
+    const preventDefault = vi.fn();
+    const handled = getCustomKeyHandler()({
+      type: 'keydown',
+      key: 'F3',
+      ctrlKey: false,
+      metaKey: false,
+      shiftKey: false,
+      altKey: false,
+      preventDefault,
+    } as unknown as KeyboardEvent);
+
+    expect(handled).toBe(true);
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('terminal-search-bar')).toBeNull();
+  });
+
   it('pastes Ctrl+V exactly once on Windows/Linux', async () => {
     const { readText } = await import('@tauri-apps/plugin-clipboard-manager');
     const readTextMock = vi.mocked(readText);
