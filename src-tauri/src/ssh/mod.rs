@@ -31,6 +31,11 @@ const BASH_SHELL_INTEGRATION_SUFFIX: &str = "printf '\\r\\033[2K'\n";
 
 const PTY_LOOP_STATS_INTERVAL: Duration = Duration::from_secs(10);
 const PTY_NON_DATA_WAKEUP_WARN_THRESHOLD: u64 = 1_000;
+pub(crate) const MIN_AUTH_TIMEOUT_SECS: u64 = 10;
+
+pub(crate) fn auth_timeout_for(connect_timeout_secs: u64) -> Duration {
+    Duration::from_secs(connect_timeout_secs.max(MIN_AUTH_TIMEOUT_SECS))
+}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct PtyLoopStats {
@@ -541,34 +546,44 @@ impl SshClient {
                 }
             })?;
 
-        let authenticated = match &config.auth_method {
-            AuthMethod::Password { password } => {
-                let mut authenticated = ssh_session
-                    .authenticate_password(&config.username, password)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Password authentication failed: {}", e))?;
-                if !authenticated && password.is_empty() {
-                    authenticated = ssh_session
-                        .authenticate_none(&config.username)
+        let auth_timeout = auth_timeout_for(timeout_secs);
+        let authenticated = tokio::time::timeout(auth_timeout, async {
+            let authenticated = match &config.auth_method {
+                AuthMethod::Password { password } => {
+                    let mut authenticated = ssh_session
+                        .authenticate_password(&config.username, password)
                         .await
-                        .map_err(|e| {
-                            anyhow::anyhow!("Passwordless authentication failed: {}", e)
-                        })?;
+                        .map_err(|e| anyhow::anyhow!("Password authentication failed: {}", e))?;
+                    if !authenticated && password.is_empty() {
+                        authenticated = ssh_session
+                            .authenticate_none(&config.username)
+                            .await
+                            .map_err(|e| {
+                                anyhow::anyhow!("Passwordless authentication failed: {}", e)
+                            })?;
+                    }
+                    authenticated
                 }
-                authenticated
-            }
-            AuthMethod::PublicKey {
-                key_path: _key_path,
-                key_data: _key_data,
-                passphrase: _passphrase,
-            } => {
-                let key = preloaded_key.expect("public-key material is loaded before connecting");
-                ssh_session
-                    .authenticate_publickey(&config.username, Arc::new(key))
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Public key authentication failed: {}. The key may not be authorized on the server.", e))?
-            }
-        };
+                AuthMethod::PublicKey {
+                    key_path: _key_path,
+                    key_data: _key_data,
+                    passphrase: _passphrase,
+                } => {
+                    let key = preloaded_key
+                        .expect("public-key material is loaded before connecting");
+                    ssh_session
+                        .authenticate_publickey(&config.username, Arc::new(key))
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Public key authentication failed: {}. The key may not be authorized on the server.", e))?
+                }
+            };
+            Ok::<bool, anyhow::Error>(authenticated)
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!(
+            "Authentication timed out after {} seconds. The server accepted the SSH connection but did not answer the login request.",
+            auth_timeout.as_secs()
+        ))??;
 
         if !authenticated {
             return Err(anyhow::anyhow!(
