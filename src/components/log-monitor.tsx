@@ -73,6 +73,10 @@ interface LogMonitorProps {
   externalLogPath?: string;
   /** Increment to re-trigger loading the same externalLogPath */
   externalLogPathKey?: number;
+  /** Visible sidebar tab; hidden panels retain state but stop remote work. */
+  active?: boolean;
+  /** Retry signal for discovery while a connection is finishing setup. */
+  connectionStatus?: 'connected' | 'connecting' | 'disconnected' | 'pending';
 }
 
 interface LogSource {
@@ -147,6 +151,8 @@ const LEVEL_LABELS: Record<LogLevel, string> = {
 };
 
 const LINE_COUNT_OPTIONS = [50, 100, 200, 500, 1000];
+const MAX_DISCOVERY_ATTEMPTS = 4;
+const RETRY_BASE_MS = 1500;
 const REFRESH_INTERVALS = [
   { value: 1, label: "1s" },
   { value: 2, label: "2s" },
@@ -242,7 +248,13 @@ const SOURCE_TYPE_LABELS: Record<string, { icon: React.ReactNode; label: string 
 
 // ── Component ──
 
-export function LogMonitor({ connectionId, externalLogPath, externalLogPathKey }: LogMonitorProps) {
+export function LogMonitor({
+  connectionId,
+  externalLogPath,
+  externalLogPathKey,
+  active = true,
+  connectionStatus = 'connected',
+}: LogMonitorProps) {
   const { t } = useTranslation();
   // Source state
   const [sources, setSources] = useState<LogSource[]>([]);
@@ -269,21 +281,28 @@ export function LogMonitor({ connectionId, externalLogPath, externalLogPathKey }
   const [scrollLocked, setScrollLocked] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastScrollTop = useRef(0);
+  const currentConnectionRef = useRef(connectionId);
+  const discoveredForRef = useRef<string | null>(null);
+  const attemptRef = useRef(0);
+  const [retryNonce, setRetryNonce] = useState(0);
 
   // ── Source discovery ──
 
-  const discoverSources = useCallback(async () => {
-    if (!connectionId) return;
+  const discoverSources = useCallback(async (): Promise<boolean> => {
+    if (!connectionId) return false;
     setIsDiscovering(true);
     try {
       const result = await invoke<LogSourcesResponse>("discover_log_sources", {
         connectionId,
       });
+      if (currentConnectionRef.current !== connectionId) return true;
+
       if (result.success) {
         setSources(result.sources);
         if (result.sources.length === 0) {
           toast.info(t('logMonitor.noSourcesDiscovered'));
         }
+        return true;
       } else if (result.error && (
         result.error.includes('Connection not found') ||
         result.error.includes('Session not found')
@@ -291,31 +310,72 @@ export function LogMonitor({ connectionId, externalLogPath, externalLogPathKey }
         // Transient: the SSH session was just created and may not be fully
         // initialized yet. Silently skip — the user can rediscover later.
         console.debug('[LogMonitor] Session not ready yet, skipping source discovery:', result.error);
+        return false;
       } else {
         toast.error(t('logMonitor.failedToDiscoverSources'), {
           description: result.error,
         });
+        return true;
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('Connection not found') || msg.includes('Session not found')) {
         console.debug('[LogMonitor] Session not ready yet, skipping source discovery:', msg);
+        return false;
       } else {
         toast.error(t('logMonitor.failedToDiscoverSources'), {
           description: msg,
         });
+        return true;
       }
     } finally {
       setIsDiscovering(false);
     }
   }, [connectionId]);
 
-  // Auto-discover on mount
+  // Discover only while visible. If the backend session is not ready yet,
+  // retry with a short bounded backoff rather than leaving the panel empty.
   useEffect(() => {
-    if (connectionId) {
-      discoverSources();
-    }
-  }, [connectionId, discoverSources]);
+    if (!connectionId || !active) return;
+    if (discoveredForRef.current === connectionId) return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    void (async () => {
+      const done = await discoverSources();
+      if (cancelled) return;
+      if (done) {
+        discoveredForRef.current = connectionId;
+        attemptRef.current = 0;
+        return;
+      }
+      if (attemptRef.current >= MAX_DISCOVERY_ATTEMPTS) return;
+      attemptRef.current += 1;
+      timer = setTimeout(
+        () => setRetryNonce((n) => n + 1),
+        attemptRef.current * RETRY_BASE_MS,
+      );
+    })();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [connectionId, active, connectionStatus, retryNonce, discoverSources]);
+
+  // Sources and loaded lines belong to the active connection. Reset them on a
+  // host switch, but keep the user's filters and refresh preferences.
+  useEffect(() => {
+    if (currentConnectionRef.current === connectionId) return;
+    currentConnectionRef.current = connectionId;
+    discoveredForRef.current = null;
+    attemptRef.current = 0;
+    setRetryNonce(0);
+    setSources([]);
+    setSelectedSourceId("");
+    setRawLines([]);
+  }, [connectionId]);
 
   // ── Find selected source ──
   const selectedSource = useMemo(
@@ -344,6 +404,7 @@ export function LogMonitor({ connectionId, externalLogPath, externalLogPathKey }
       if (!isAutoRefresh) setIsLoading(true);
 
       try {
+        const requestedFor = connectionId;
         const result = await invoke<{
           success: boolean;
           output?: string;
@@ -354,6 +415,8 @@ export function LogMonitor({ connectionId, externalLogPath, externalLogPathKey }
           path,
           lines: lineCount,
         });
+
+        if (currentConnectionRef.current !== requestedFor) return;
 
         if (result.success && result.output) {
           const _prevScrollHeight = scrollRef.current?.scrollHeight ?? 0;
@@ -400,15 +463,15 @@ export function LogMonitor({ connectionId, externalLogPath, externalLogPathKey }
     }
   }, [selectedSourceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-refresh timer
+  // Auto-refresh timer. Hidden panels perform no remote reads.
   useEffect(() => {
-    if (!autoRefresh || !selectedSourceId) return;
+    if (!autoRefresh || !selectedSourceId || !active) return;
     const interval = setInterval(
       () => { void loadLog(true); },
       refreshInterval * 1000
     );
     return () => clearInterval(interval);
-  }, [autoRefresh, selectedSourceId, refreshInterval, loadLog]);
+  }, [autoRefresh, selectedSourceId, refreshInterval, loadLog, active]);
 
   // Handle external log path (sent from file browser)
   useEffect(() => {
