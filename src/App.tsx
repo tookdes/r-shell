@@ -741,7 +741,7 @@ function AppContent() {
       const connectionDataRaw = ConnectionStorageManager.getConnection(connection.id);
       if (!connectionDataRaw) return false;
 
-      let connectionData;
+      let connectionData = connectionDataRaw;
       try {
         connectionData = mergeWithSessionCredentials(
           connection.id,
@@ -755,6 +755,7 @@ function AppContent() {
         console.error('[Connection] Failed to decrypt saved credentials:', error);
         const recoveryConfig = toConnectionConfig(connectionDataRaw);
         recoveryConfig.password = '';
+        recoveryConfig.privateKeyData = '';
         recoveryConfig.passphrase = '';
         recoveryConfig.proxyPassword = '';
         setEditingConnection(recoveryConfig);
