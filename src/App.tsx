@@ -266,13 +266,7 @@ function AppContent() {
       if (!tab) continue;
 
       try {
-        if (
-          tab.connectionStatus === 'pending' &&
-          tab.tabType !== 'file-browser' &&
-          tab.tabType !== 'desktop'
-        ) {
-          await invoke('ssh_cancel_connect', { connection_id: tabId });
-        } else if (tab.tabType === 'file-browser') {
+        if (tab.tabType === 'file-browser') {
           if (tab.protocol === 'SFTP') {
             try { await invoke('abort_connection_transfers', { connectionId: tabId }); } catch { /* ignore */ }
             await invoke('sftp_standalone_disconnect', { connection_id: tabId });
@@ -989,28 +983,23 @@ function AppContent() {
     if (!group) return;
     for (const tab of group.tabs) {
       liveTabIdsRef.current.delete(tab.id);
-      if (
-        tab.connectionStatus === 'pending' &&
-        tab.tabType !== 'file-browser' &&
-        tab.tabType !== 'desktop'
-      ) {
-        try {
-          await invoke('ssh_cancel_connect', { connection_id: tab.id });
-        } catch {
-          // Already settled; reducer cleanup still proceeds.
-        }
-      }
-      // Disconnect SFTP/FTP sessions when closing file-browser tabs
-      if (tab.tabType === 'file-browser') {
-        try {
+      try {
+        if (tab.tabType === 'file-browser') {
           if (tab.protocol === 'SFTP') {
+            try { await invoke('abort_connection_transfers', { connectionId: tab.id }); } catch { /* ignore */ }
             await invoke('sftp_standalone_disconnect', { connection_id: tab.id });
           } else if (tab.protocol === 'FTP') {
             await invoke('ftp_disconnect', { connection_id: tab.id });
           }
-        } catch {
-          // Ignore disconnect errors on tab close
+        } else if (tab.tabType === 'desktop') {
+          await invoke('desktop_disconnect', { connection_id: tab.id });
+        } else {
+          // Backend close_connection also cancels pending SSH attempts, so one
+          // call safely covers pending, connected, and PTY-backed terminals.
+          await invoke('ssh_disconnect', { connection_id: tab.id });
         }
+      } catch {
+        // UI close is authoritative; backend cleanup is best-effort.
       }
     }
     dispatch({ type: 'CLOSE_ALL_TABS', groupId });
