@@ -255,6 +255,30 @@ describe("ConnectionManager folder selection", () => {
     );
   });
 
+  it("double-clicking a connection calls the connect handler once", () => {
+    const onConnect = vi.fn();
+
+    render(
+      <ConnectionManager
+        onConnectionSelect={vi.fn()}
+        onConnectionConnect={onConnect}
+        selectedConnectionId={null}
+        activeConnections={new Set()}
+      />,
+    );
+
+    fireEvent.doubleClick(screen.getByText("Test Server"));
+
+    expect(onConnect).toHaveBeenCalledTimes(1);
+    expect(onConnect).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "connection",
+        name: "Test Server",
+      }),
+    );
+  });
+
+
   it("connection row shows visual highlight when selected (regression)", () => {
     const { container } = render(
       <ConnectionManager
