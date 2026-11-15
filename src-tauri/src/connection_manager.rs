@@ -105,6 +105,7 @@ impl ConnectionManager {
         Some(token)
     }
 
+    #[cfg(test)]
     async fn clear_pending_connection(&self, connection_id: &str) {
         let mut pending = self.pending_connections.write().await;
         pending.remove(connection_id);
