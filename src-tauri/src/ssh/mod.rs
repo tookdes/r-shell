@@ -505,16 +505,58 @@ impl SshClient {
 
         // Load key material before opening the network session so bad local
         // credentials fail immediately instead of surfacing as a host timeout.
-        let preloaded_key = match &config.auth_method {
+        // With no explicit path/data, offer every conventional ~/.ssh key in
+        // OpenSSH order instead of failing on the first existing but rejected key.
+        let mut preloaded_keys = match &config.auth_method {
             AuthMethod::PublicKey {
                 key_path,
                 key_data,
                 passphrase,
-            } => Some(load_private_key(
-                key_path.as_deref(),
-                key_data.as_deref(),
-                passphrase.as_deref(),
-            )?),
+            } => {
+                let has_explicit_path = key_path
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|value| !value.is_empty());
+                let has_inline_data = key_data
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|value| !value.is_empty());
+
+                if has_explicit_path || has_inline_data {
+                    Some(vec![(
+                        "configured key".to_string(),
+                        load_private_key(
+                            key_path.as_deref(),
+                            key_data.as_deref(),
+                            passphrase.as_deref(),
+                        )?,
+                    )])
+                } else {
+                    let candidates = crate::os_keypath::default_key_candidates();
+                    if candidates.is_empty() {
+                        return Err(anyhow::anyhow!(
+                            "No default SSH private key found in ~/.ssh. Checked {}.",
+                            crate::os_keypath::DEFAULT_KEY_FILES.join(", ")
+                        ));
+                    }
+
+                    let mut loaded = Vec::new();
+                    let mut skipped = Vec::new();
+                    for path in candidates {
+                        match load_private_key(Some(&path), None, passphrase.as_deref()) {
+                            Ok(key) => loaded.push((path, key)),
+                            Err(error) => skipped.push(format!("{} ({})", path, error)),
+                        }
+                    }
+                    if loaded.is_empty() {
+                        return Err(anyhow::anyhow!(
+                            "Failed to load any default SSH private key. Tried: {}",
+                            skipped.join("; ")
+                        ));
+                    }
+                    Some(loaded)
+                }
+            }
             AuthMethod::Password { .. } => None,
         };
         let handler = Client::new(config.host.clone(), config.port, config.verify_host_key);
@@ -564,17 +606,31 @@ impl SshClient {
                     }
                     authenticated
                 }
-                AuthMethod::PublicKey {
-                    key_path: _key_path,
-                    key_data: _key_data,
-                    passphrase: _passphrase,
-                } => {
-                    let key = preloaded_key
+                AuthMethod::PublicKey { .. } => {
+                    let keys = preloaded_keys
+                        .take()
                         .expect("public-key material is loaded before connecting");
-                    ssh_session
-                        .authenticate_publickey(&config.username, Arc::new(key))
-                        .await
-                        .map_err(|e| anyhow::anyhow!("Public key authentication failed: {}. The key may not be authorized on the server.", e))?
+                    let mut authenticated = false;
+                    for (label, key) in keys {
+                        let accepted = ssh_session
+                            .authenticate_publickey(&config.username, Arc::new(key))
+                            .await
+                            .map_err(|e| anyhow::anyhow!(
+                                "Public key authentication failed while trying {}: {}.",
+                                label,
+                                e
+                            ))?;
+                        if accepted {
+                            authenticated = true;
+                            break;
+                        }
+                        tracing::debug!(
+                            "[SSH] Public key was not accepted for {}: {}",
+                            config.username,
+                            label
+                        );
+                    }
+                    authenticated
                 }
             };
             Ok::<bool, anyhow::Error>(authenticated)
