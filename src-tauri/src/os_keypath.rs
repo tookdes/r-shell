@@ -1,5 +1,22 @@
 use std::path::Path;
 
+pub const DEFAULT_KEY_FILES: [&str; 3] = ["id_rsa", "id_ecdsa", "id_ed25519"];
+
+pub fn default_key_candidates() -> Vec<String> {
+    dirs::home_dir()
+        .map(|home| default_key_candidates_with_home(&home))
+        .unwrap_or_default()
+}
+
+fn default_key_candidates_with_home(home: &Path) -> Vec<String> {
+    DEFAULT_KEY_FILES
+        .iter()
+        .map(|name| home.join(".ssh").join(name))
+        .filter(|path| path.is_file())
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect()
+}
+
 /// Resolve an explicit private-key path, or fall back to the conventional
 /// default keys. Keep id_rsa first to match upstream v2.9.2 behaviour.
 pub fn resolve_private_key_path(key_path: Option<&str>) -> Result<String, String> {
@@ -21,18 +38,15 @@ fn resolve_private_key_path_with_home(
         return Ok(expand_tilde_with_home(path, home));
     }
 
-    let ssh_dir = home.join(".ssh");
-    for filename in ["id_rsa", "id_ed25519"] {
-        let candidate = ssh_dir.join(filename);
-        if candidate.is_file() {
-            return Ok(candidate.to_string_lossy().into_owned());
-        }
+    let candidates = default_key_candidates_with_home(home);
+    if let Some(candidate) = candidates.first() {
+        return Ok(candidate.clone());
     }
 
     Err(format!(
-        "No default SSH private key found. Checked {} and {}",
-        ssh_dir.join("id_rsa").display(),
-        ssh_dir.join("id_ed25519").display(),
+        "No default SSH private key found in {}. Checked {}.",
+        home.join(".ssh").display(),
+        DEFAULT_KEY_FILES.join(", "),
     ))
 }
 
@@ -95,10 +109,26 @@ mod tests {
     }
 
     #[test]
-    fn missing_defaults_reports_both_candidates() {
+    fn default_candidates_follow_openssh_order() {
+        let home = test_home("candidate-order");
+        let ed25519 = write_key(&home, "id_ed25519");
+        let rsa = write_key(&home, "id_rsa");
+        let ecdsa = write_key(&home, "id_ecdsa");
+
+        assert_eq!(
+            default_key_candidates_with_home(&home),
+            vec![
+                rsa.to_string_lossy().into_owned(),
+                ecdsa.to_string_lossy().into_owned(),
+                ed25519.to_string_lossy().into_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_defaults_reports_all_candidates() {
         let home = test_home("missing");
         let err = resolve_private_key_path_with_home(None, &home).unwrap_err();
-        assert!(err.contains("id_rsa"));
-        assert!(err.contains("id_ed25519"));
+        assert!(DEFAULT_KEY_FILES.iter().all(|name| err.contains(name)));
     }
 }
