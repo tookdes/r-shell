@@ -17,6 +17,7 @@ import { IntegratedFileBrowser } from './components/integrated-file-browser';
 import { WelcomeScreen } from './components/welcome-screen';
 import { UpdateChecker } from './components/update-checker';
 import { toConnectionConfig } from './lib/connection-config';
+import { beginConnect, endConnect, nextDuplicateId } from './lib/connect-guard';
 import { ActiveConnectionsManager, ConnectionStorageManager } from './lib/connection-storage';
 import { isDesktopProtocol, isProtocolImplemented, isRdpProtocol } from './lib/protocol-config';
 import { registerRestoration, clearAllRestorations } from './lib/restoration-manager';
@@ -733,16 +734,37 @@ function AppContent() {
     setSelectedConnection(connection);
   };
 
-  const handleConnectionConnect = useCallback(async (connection: ConnectionNode): Promise<boolean> => {
+  const runConnectionConnect = useCallback(async (connection: ConnectionNode): Promise<boolean> => {
     if (connection.type === 'connection') {
       setSelectedConnection(connection);
 
       const connectionDataRaw = ConnectionStorageManager.getConnection(connection.id);
       if (!connectionDataRaw) return false;
-      const connectionData = mergeWithSessionCredentials(
-        connection.id,
-        await decryptConnectionSecrets(connectionDataRaw),
-      );
+
+      let connectionData;
+      try {
+        connectionData = mergeWithSessionCredentials(
+          connection.id,
+          await decryptConnectionSecrets(connectionDataRaw),
+        );
+      } catch (error) {
+        // On macOS an unsigned/identity-changing bundle can lose access to the
+        // Keychain item that protects saved credentials. Never let that turn a
+        // double-click into a silent rejected Promise: surface the failure and
+        // reopen the connection form with secret fields cleared.
+        console.error('[Connection] Failed to decrypt saved credentials:', error);
+        const recoveryConfig = toConnectionConfig(connectionDataRaw);
+        recoveryConfig.password = '';
+        recoveryConfig.passphrase = '';
+        recoveryConfig.proxyPassword = '';
+        setEditingConnection(recoveryConfig);
+        setPendingConnectionId(connection.id);
+        setConnectionDialogOpen(true);
+        toast.error(t('app.decryptCredentialsFailed'), {
+          description: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
       rememberSessionCredentials(connection.id, connectionData);
 
       if (!isProtocolImplemented(connectionData.protocol)) {
@@ -777,7 +799,7 @@ function AppContent() {
       // Always use a unique session ID — the backend may still hold a stale
       // session from a previously closed tab that was never disconnected.
       // A fresh session ID guarantees a new TCP connection with the latest config.
-      const sessionId = `${connection.id}-dup-${Date.now()}`;
+      const sessionId = nextDuplicateId(connection.id);
 
       if (isFileBrowser) {
         // SFTP/FTP connect flow
@@ -929,6 +951,18 @@ function AppContent() {
     return false;
   }, [dispatch, showUnsupportedProtocolToast, state.activeGroupId, t]);
 
+  const handleConnectionConnect = useCallback(async (connection: ConnectionNode): Promise<boolean> => {
+    if (connection.type !== 'connection') return false;
+    if (!beginConnect(connection.id)) {
+      return false;
+    }
+    try {
+      return await runConnectionConnect(connection);
+    } finally {
+      endConnect(connection.id);
+    }
+  }, [runConnectionConnect]);
+
   const handleTabSelect = useCallback((tabId: string) => {
     // Find which group contains this tab and activate it
     for (const group of Object.values(state.groups)) {
@@ -1041,7 +1075,7 @@ function AppContent() {
     rememberSessionCredentials(originalConnectionId, connectionData);
 
     try {
-      const duplicateId = `${originalConnectionId}-dup-${Date.now()}`;
+      const duplicateId = nextDuplicateId(originalConnectionId);
 
       if (isFileBrowser) {
         // SFTP/FTP duplicate flow
@@ -1727,7 +1761,7 @@ function AppContent() {
         tab.originalConnectionId === config.id &&
         (tab.connectionStatus === 'disconnected' || tab.connectionStatus === 'pending')
       );
-      const sessionId = pendingTab ? pendingTab.id : `${config.id}-dup-${Date.now()}`;
+      const sessionId = pendingTab ? pendingTab.id : nextDuplicateId(config.id);
 
       if (!isProtocolImplemented(config.protocol)) {
         if (isRdpProtocol(config.protocol)) {
