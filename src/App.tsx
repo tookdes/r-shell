@@ -1161,7 +1161,7 @@ function AppContent() {
     }
   }, [allTabs, state.activeGroupId, dispatch, showUnsupportedProtocolToast, t]);
 
-  const handleReconnect = useCallback(async (tabId: string) => {
+  const runReconnect = useCallback(async (tabId: string) => {
     const tabToReconnect = allTabs.find(tab => tab.id === tabId);
     if (!tabToReconnect) return;
 
@@ -1321,6 +1321,15 @@ function AppContent() {
       });
     }
   }, [allTabs, dispatch, showUnsupportedProtocolToast, t]);
+
+  const handleReconnect = useCallback(async (tabId: string) => {
+    if (!beginConnect(tabId)) return;
+    try {
+      await runReconnect(tabId);
+    } finally {
+      endConnect(tabId);
+    }
+  }, [runReconnect]);
 
   // Handler: open a remote file in the Log Monitor panel
   const handleOpenInLogMonitor = useCallback((filePath: string) => {
@@ -1938,7 +1947,7 @@ function AppContent() {
   }));
 
   // Quick connect handler
-  const handleQuickConnect = useCallback(async (connectionId: string) => {
+  const runQuickConnect = useCallback(async (connectionId: string) => {
     const existingTab = allTabs.find(tab => tab.id === connectionId || tab.originalConnectionId === connectionId);
     if (existingTab) {
       handleTabSelect(existingTab.id);
@@ -1963,7 +1972,7 @@ function AppContent() {
       );
       rememberSessionCredentials(connectionId, connectionData);
 
-      const success = await handleConnectionConnect({
+      const success = await runConnectionConnect({
         id: connectionId,
         name: connectionData.name,
         type: 'connection',
@@ -1980,7 +1989,16 @@ function AppContent() {
         description: error instanceof Error ? error.message : t('app.connectionErrorDesc'),
       });
     }
-  }, [allTabs, handleTabSelect, handleConnectionConnect, t]);
+  }, [allTabs, handleTabSelect, runConnectionConnect, t]);
+
+  const handleQuickConnect = useCallback(async (connectionId: string) => {
+    if (!beginConnect(connectionId)) return;
+    try {
+      await runQuickConnect(connectionId);
+    } finally {
+      endConnect(connectionId);
+    }
+  }, [runQuickConnect]);
 
   // Derive active connection info for StatusBar (compatible format)
   const statusBarConnection = activeConnection ? {
