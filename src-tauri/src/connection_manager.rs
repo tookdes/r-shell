@@ -55,7 +55,15 @@ impl ConnectionManager {
 
     pub async fn create_connection(&self, connection_id: String, config: SshConfig) -> Result<()> {
         let mut client = SshClient::new();
-        let cancel_token = self.register_pending_connection(&connection_id).await;
+        let cancel_token = self
+            .register_pending_connection(&connection_id)
+            .await
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "A connection attempt for '{}' is already in progress",
+                    connection_id
+                )
+            })?;
 
         let connect_result = tokio::select! {
             res = client.connect(&config) => res,
@@ -72,11 +80,14 @@ impl ConnectionManager {
         Ok(())
     }
 
-    async fn register_pending_connection(&self, connection_id: &str) -> CancellationToken {
+    async fn register_pending_connection(&self, connection_id: &str) -> Option<CancellationToken> {
         let token = CancellationToken::new();
         let mut pending = self.pending_connections.write().await;
+        if pending.contains_key(connection_id) {
+            return None;
+        }
         pending.insert(connection_id.to_string(), token.clone());
-        token
+        Some(token)
     }
 
     async fn clear_pending_connection(&self, connection_id: &str) {
@@ -674,6 +685,20 @@ mod tests {
         let elapsed = start.elapsed();
         assert!(elapsed >= std::time::Duration::from_millis(1000));
         assert!(elapsed < std::time::Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn concurrent_connect_registrations_for_one_id_are_refused() {
+        let mgr = ConnectionManager::new();
+
+        assert!(mgr.register_pending_connection("conn-1").await.is_some());
+        assert!(mgr.register_pending_connection("conn-1").await.is_none());
+
+        mgr.clear_pending_connection("conn-1").await;
+        assert!(mgr.register_pending_connection("conn-1").await.is_some());
+
+        assert!(mgr.cancel_pending_connection("conn-1").await);
+        assert!(mgr.register_pending_connection("conn-1").await.is_some());
     }
 
     #[tokio::test]
