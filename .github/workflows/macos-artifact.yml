@@ -1,0 +1,63 @@
+name: macOS artifact validation
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  macos-package:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install dependencies
+        run: |
+          brew install pkg-config
+          pnpm install --frozen-lockfile
+
+      - name: Frontend tests
+        run: pnpm test
+
+      - name: TypeScript
+        run: pnpm tsc --noEmit
+
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --all-targets
+
+      - name: Rust clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings -A dead_code
+
+      - name: Rust fmt
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: Build macOS app bundle
+        run: pnpm tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Verify macOS app bundle
+        run: bash scripts/verify-macos-bundle.sh src-tauri/target/release/bundle/macos/r-shell.app
+
+      - name: Archive app bundle
+        run: ditto -c -k --sequesterRsrc --keepParent src-tauri/target/release/bundle/macos/r-shell.app r-shell-macos.app.zip
+
+      - name: Upload macOS app
+        uses: actions/upload-artifact@v4
+        with:
+          name: r-shell-macos-app
+          if-no-files-found: error
+          path: r-shell-macos.app.zip
