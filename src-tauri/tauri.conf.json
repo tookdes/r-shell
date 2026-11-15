@@ -51,6 +51,12 @@
       "nsis": {
         "template": "nsis/installer.nsi"
       }
+    },
+    "macOS": {
+      "signingIdentity": "-",
+      "files": {
+        "Resources/zh-Hans.lproj/InfoPlist.strings": "zh-Hans.lproj/InfoPlist.strings"
+      }
     }
   }
 }

@@ -505,16 +505,58 @@ impl SshClient {
 
         // Load key material before opening the network session so bad local
         // credentials fail immediately instead of surfacing as a host timeout.
-        let preloaded_key = match &config.auth_method {
+        // With no explicit path/data, offer every conventional ~/.ssh key in
+        // OpenSSH order instead of failing on the first existing but rejected key.
+        let mut preloaded_keys = match &config.auth_method {
             AuthMethod::PublicKey {
                 key_path,
                 key_data,
                 passphrase,
-            } => Some(load_private_key(
-                key_path.as_deref(),
-                key_data.as_deref(),
-                passphrase.as_deref(),
-            )?),
+            } => {
+                let has_explicit_path = key_path
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|value| !value.is_empty());
+                let has_inline_data = key_data
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|value| !value.is_empty());
+
+                if has_explicit_path || has_inline_data {
+                    Some(vec![(
+                        "configured key".to_string(),
+                        load_private_key(
+                            key_path.as_deref(),
+                            key_data.as_deref(),
+                            passphrase.as_deref(),
+                        )?,
+                    )])
+                } else {
+                    let candidates = crate::os_keypath::default_key_candidates();
+                    if candidates.is_empty() {
+                        return Err(anyhow::anyhow!(
+                            "No default SSH private key found in ~/.ssh. Checked {}.",
+                            crate::os_keypath::DEFAULT_KEY_FILES.join(", ")
+                        ));
+                    }
+
+                    let mut loaded = Vec::new();
+                    let mut skipped = Vec::new();
+                    for path in candidates {
+                        match load_private_key(Some(&path), None, passphrase.as_deref()) {
+                            Ok(key) => loaded.push((path, key)),
+                            Err(error) => skipped.push(format!("{} ({})", path, error)),
+                        }
+                    }
+                    if loaded.is_empty() {
+                        return Err(anyhow::anyhow!(
+                            "Failed to load any default SSH private key. Tried: {}",
+                            skipped.join("; ")
+                        ));
+                    }
+                    Some(loaded)
+                }
+            }
             AuthMethod::Password { .. } => None,
         };
         let handler = Client::new(config.host.clone(), config.port, config.verify_host_key);
@@ -564,17 +606,31 @@ impl SshClient {
                     }
                     authenticated
                 }
-                AuthMethod::PublicKey {
-                    key_path: _key_path,
-                    key_data: _key_data,
-                    passphrase: _passphrase,
-                } => {
-                    let key = preloaded_key
+                AuthMethod::PublicKey { .. } => {
+                    let keys = preloaded_keys
+                        .take()
                         .expect("public-key material is loaded before connecting");
-                    ssh_session
-                        .authenticate_publickey(&config.username, Arc::new(key))
-                        .await
-                        .map_err(|e| anyhow::anyhow!("Public key authentication failed: {}. The key may not be authorized on the server.", e))?
+                    let mut authenticated = false;
+                    for (label, key) in keys {
+                        let accepted = ssh_session
+                            .authenticate_publickey(&config.username, Arc::new(key))
+                            .await
+                            .map_err(|e| anyhow::anyhow!(
+                                "Public key authentication failed while trying {}: {}.",
+                                label,
+                                e
+                            ))?;
+                        if accepted {
+                            authenticated = true;
+                            break;
+                        }
+                        tracing::debug!(
+                            "[SSH] Public key was not accepted for {}: {}",
+                            config.username,
+                            label
+                        );
+                    }
+                    authenticated
                 }
             };
             Ok::<bool, anyhow::Error>(authenticated)
@@ -778,22 +834,29 @@ impl SshClient {
             // Create a channel for resize requests
             let (resize_tx, mut resize_rx) = mpsc::channel::<(u32, u32)>(16);
 
+            // One cancellation token owns the lifetime of both PTY worker
+            // tasks. Closing a tab must stop the SSH reader/writer even when
+            // the remote shell is completely idle.
+            let cancel = CancellationToken::new();
+
             // Spawn task to handle input (frontend → SSH)
-            // This is similar to ttyd's pty_write and INPUT command handling
-            // Key: immediate write + flush for responsiveness
+            let input_cancel = cancel.clone();
             tokio::spawn(async move {
                 let mut writer = input_channel;
-                while let Some(data) = input_rx.recv().await {
-                    // Write data immediately
-                    if let Err(e) = writer.write_all(&data).await {
-                        tracing::warn!("[PTY] Failed to send data to SSH: {}", e);
-                        break;
-                    }
-                    // Critical: flush immediately after write (like ttyd)
-                    // This ensures data is sent to PTY without buffering delay
-                    if let Err(e) = writer.flush().await {
-                        tracing::warn!("[PTY] Failed to flush data to SSH: {}", e);
-                        break;
+                loop {
+                    tokio::select! {
+                        _ = input_cancel.cancelled() => break,
+                        data = input_rx.recv() => {
+                            let Some(data) = data else { break };
+                            if let Err(e) = writer.write_all(&data).await {
+                                tracing::warn!("[PTY] Failed to send data to SSH: {}", e);
+                                break;
+                            }
+                            if let Err(e) = writer.flush().await {
+                                tracing::warn!("[PTY] Failed to flush data to SSH: {}", e);
+                                break;
+                            }
+                        }
                     }
                 }
             });
@@ -820,6 +883,7 @@ impl SshClient {
             // low-overhead PTY wakeup diagnostics. Counters stay local to this
             // task, so the hot path only performs integer increments.
             let diagnostic_connection_id = connection_id.to_string();
+            let output_cancel = cancel.clone();
             tokio::spawn(async move {
                 let mut pending_startup = startup_bytes;
                 let mut stats = PtyLoopStats::default();
@@ -839,6 +903,14 @@ impl SshClient {
 
                 loop {
                     tokio::select! {
+                        _ = output_cancel.cancelled() => {
+                            tracing::debug!(
+                                "[PTY] Worker cancellation received id={} gen={}",
+                                diagnostic_connection_id,
+                                generation,
+                            );
+                            break;
+                        }
                         msg = channel.wait() => {
                             match msg {
                                 Some(ChannelMsg::Data { data }) => {
@@ -924,6 +996,18 @@ impl SshClient {
                     }
                 }
 
+                // Best-effort bounded close so the remote shell is not left
+                // running after the local tab/session is torn down.
+                if tokio::time::timeout(Duration::from_secs(5), channel.close())
+                    .await
+                    .is_err()
+                {
+                    tracing::debug!(
+                        "[PTY] Channel close timed out id={} gen={}",
+                        diagnostic_connection_id,
+                        generation,
+                    );
+                }
                 log_pty_loop_stats(&diagnostic_connection_id, generation, &stats, true);
                 tracing::info!(
                     "[PTY-STATS] task exited id={} gen={}",
@@ -936,7 +1020,7 @@ impl SshClient {
                 input_tx,
                 output_rx: Arc::new(tokio::sync::Mutex::new(output_rx)),
                 resize_tx,
-                cancel: CancellationToken::new(),
+                cancel,
             })
         } else {
             Err(anyhow::anyhow!("Not connected"))

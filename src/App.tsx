@@ -17,6 +17,7 @@ import { IntegratedFileBrowser } from './components/integrated-file-browser';
 import { WelcomeScreen } from './components/welcome-screen';
 import { UpdateChecker } from './components/update-checker';
 import { toConnectionConfig } from './lib/connection-config';
+import { beginConnect, endConnect, nextDuplicateId } from './lib/connect-guard';
 import { ActiveConnectionsManager, ConnectionStorageManager } from './lib/connection-storage';
 import { isDesktopProtocol, isProtocolImplemented, isRdpProtocol } from './lib/protocol-config';
 import { registerRestoration, clearAllRestorations } from './lib/restoration-manager';
@@ -265,13 +266,7 @@ function AppContent() {
       if (!tab) continue;
 
       try {
-        if (
-          tab.connectionStatus === 'pending' &&
-          tab.tabType !== 'file-browser' &&
-          tab.tabType !== 'desktop'
-        ) {
-          await invoke('ssh_cancel_connect', { connection_id: tabId });
-        } else if (tab.tabType === 'file-browser') {
+        if (tab.tabType === 'file-browser') {
           if (tab.protocol === 'SFTP') {
             try { await invoke('abort_connection_transfers', { connectionId: tabId }); } catch { /* ignore */ }
             await invoke('sftp_standalone_disconnect', { connection_id: tabId });
@@ -733,16 +728,38 @@ function AppContent() {
     setSelectedConnection(connection);
   };
 
-  const handleConnectionConnect = useCallback(async (connection: ConnectionNode): Promise<boolean> => {
+  const runConnectionConnect = useCallback(async (connection: ConnectionNode): Promise<boolean> => {
     if (connection.type === 'connection') {
       setSelectedConnection(connection);
 
       const connectionDataRaw = ConnectionStorageManager.getConnection(connection.id);
       if (!connectionDataRaw) return false;
-      const connectionData = mergeWithSessionCredentials(
-        connection.id,
-        await decryptConnectionSecrets(connectionDataRaw),
-      );
+
+      let connectionData = connectionDataRaw;
+      try {
+        connectionData = mergeWithSessionCredentials(
+          connection.id,
+          await decryptConnectionSecrets(connectionDataRaw),
+        );
+      } catch (error) {
+        // Keychain access can fail (for example after a macOS bundle/signing
+        // identity change). Never let that turn a double-click into a silent
+        // rejected Promise: surface the failure and reopen the connection form
+        // with secret fields cleared.
+        console.error('[Connection] Failed to decrypt saved credentials:', error);
+        const recoveryConfig = toConnectionConfig(connectionDataRaw);
+        recoveryConfig.password = '';
+        recoveryConfig.privateKeyData = '';
+        recoveryConfig.passphrase = '';
+        recoveryConfig.proxyPassword = '';
+        setEditingConnection(recoveryConfig);
+        setPendingConnectionId(connection.id);
+        setConnectionDialogOpen(true);
+        toast.error(t('app.decryptCredentialsFailed'), {
+          description: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
       rememberSessionCredentials(connection.id, connectionData);
 
       if (!isProtocolImplemented(connectionData.protocol)) {
@@ -777,7 +794,7 @@ function AppContent() {
       // Always use a unique session ID — the backend may still hold a stale
       // session from a previously closed tab that was never disconnected.
       // A fresh session ID guarantees a new TCP connection with the latest config.
-      const sessionId = `${connection.id}-dup-${Date.now()}`;
+      const sessionId = nextDuplicateId(connection.id);
 
       if (isFileBrowser) {
         // SFTP/FTP connect flow
@@ -929,6 +946,18 @@ function AppContent() {
     return false;
   }, [dispatch, showUnsupportedProtocolToast, state.activeGroupId, t]);
 
+  const handleConnectionConnect = useCallback(async (connection: ConnectionNode): Promise<boolean> => {
+    if (connection.type !== 'connection') return false;
+    if (!beginConnect(connection.id)) {
+      return false;
+    }
+    try {
+      return await runConnectionConnect(connection);
+    } finally {
+      endConnect(connection.id);
+    }
+  }, [runConnectionConnect]);
+
   const handleTabSelect = useCallback((tabId: string) => {
     // Find which group contains this tab and activate it
     for (const group of Object.values(state.groups)) {
@@ -954,28 +983,23 @@ function AppContent() {
     if (!group) return;
     for (const tab of group.tabs) {
       liveTabIdsRef.current.delete(tab.id);
-      if (
-        tab.connectionStatus === 'pending' &&
-        tab.tabType !== 'file-browser' &&
-        tab.tabType !== 'desktop'
-      ) {
-        try {
-          await invoke('ssh_cancel_connect', { connection_id: tab.id });
-        } catch {
-          // Already settled; reducer cleanup still proceeds.
-        }
-      }
-      // Disconnect SFTP/FTP sessions when closing file-browser tabs
-      if (tab.tabType === 'file-browser') {
-        try {
+      try {
+        if (tab.tabType === 'file-browser') {
           if (tab.protocol === 'SFTP') {
+            try { await invoke('abort_connection_transfers', { connectionId: tab.id }); } catch { /* ignore */ }
             await invoke('sftp_standalone_disconnect', { connection_id: tab.id });
           } else if (tab.protocol === 'FTP') {
             await invoke('ftp_disconnect', { connection_id: tab.id });
           }
-        } catch {
-          // Ignore disconnect errors on tab close
+        } else if (tab.tabType === 'desktop') {
+          await invoke('desktop_disconnect', { connection_id: tab.id });
+        } else {
+          // Backend close_connection also cancels pending SSH attempts, so one
+          // call safely covers pending, connected, and PTY-backed terminals.
+          await invoke('ssh_disconnect', { connection_id: tab.id });
         }
+      } catch {
+        // UI close is authoritative; backend cleanup is best-effort.
       }
     }
     dispatch({ type: 'CLOSE_ALL_TABS', groupId });
@@ -1041,7 +1065,7 @@ function AppContent() {
     rememberSessionCredentials(originalConnectionId, connectionData);
 
     try {
-      const duplicateId = `${originalConnectionId}-dup-${Date.now()}`;
+      const duplicateId = nextDuplicateId(originalConnectionId);
 
       if (isFileBrowser) {
         // SFTP/FTP duplicate flow
@@ -1126,7 +1150,7 @@ function AppContent() {
     }
   }, [allTabs, state.activeGroupId, dispatch, showUnsupportedProtocolToast, t]);
 
-  const handleReconnect = useCallback(async (tabId: string) => {
+  const runReconnect = useCallback(async (tabId: string) => {
     const tabToReconnect = allTabs.find(tab => tab.id === tabId);
     if (!tabToReconnect) return;
 
@@ -1286,6 +1310,15 @@ function AppContent() {
       });
     }
   }, [allTabs, dispatch, showUnsupportedProtocolToast, t]);
+
+  const handleReconnect = useCallback(async (tabId: string) => {
+    if (!beginConnect(tabId)) return;
+    try {
+      await runReconnect(tabId);
+    } finally {
+      endConnect(tabId);
+    }
+  }, [runReconnect]);
 
   // Handler: open a remote file in the Log Monitor panel
   const handleOpenInLogMonitor = useCallback((filePath: string) => {
@@ -1727,7 +1760,7 @@ function AppContent() {
         tab.originalConnectionId === config.id &&
         (tab.connectionStatus === 'disconnected' || tab.connectionStatus === 'pending')
       );
-      const sessionId = pendingTab ? pendingTab.id : `${config.id}-dup-${Date.now()}`;
+      const sessionId = pendingTab ? pendingTab.id : nextDuplicateId(config.id);
 
       if (!isProtocolImplemented(config.protocol)) {
         if (isRdpProtocol(config.protocol)) {
@@ -1903,7 +1936,7 @@ function AppContent() {
   }));
 
   // Quick connect handler
-  const handleQuickConnect = useCallback(async (connectionId: string) => {
+  const runQuickConnect = useCallback(async (connectionId: string) => {
     const existingTab = allTabs.find(tab => tab.id === connectionId || tab.originalConnectionId === connectionId);
     if (existingTab) {
       handleTabSelect(existingTab.id);
@@ -1928,7 +1961,7 @@ function AppContent() {
       );
       rememberSessionCredentials(connectionId, connectionData);
 
-      const success = await handleConnectionConnect({
+      const success = await runConnectionConnect({
         id: connectionId,
         name: connectionData.name,
         type: 'connection',
@@ -1945,7 +1978,16 @@ function AppContent() {
         description: error instanceof Error ? error.message : t('app.connectionErrorDesc'),
       });
     }
-  }, [allTabs, handleTabSelect, handleConnectionConnect, t]);
+  }, [allTabs, handleTabSelect, runConnectionConnect, t]);
+
+  const handleQuickConnect = useCallback(async (connectionId: string) => {
+    if (!beginConnect(connectionId)) return;
+    try {
+      await runQuickConnect(connectionId);
+    } finally {
+      endConnect(connectionId);
+    }
+  }, [runQuickConnect]);
 
   // Derive active connection info for StatusBar (compatible format)
   const statusBarConnection = activeConnection ? {

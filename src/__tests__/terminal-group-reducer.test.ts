@@ -251,6 +251,23 @@ describe('ADD_TAB', () => {
     expect(next.groups['1'].tabs).toHaveLength(1);
     expect(next.groups['1'].activeTabId).toBe('t1');
   });
+
+  it('refuses duplicate tab ids across groups', () => {
+    let state = createDefaultState();
+    state = terminalGroupReducer(state, { type: 'ADD_TAB', groupId: '1', tab: makeTab('same') });
+    state = terminalGroupReducer(state, { type: 'SPLIT_GROUP', groupId: '1', direction: 'right' });
+
+    const next = terminalGroupReducer(state, {
+      type: 'ADD_TAB',
+      groupId: '2',
+      tab: makeTab('same', 'Duplicate'),
+    });
+
+    expect(next).toBe(state);
+    expect(next.groups['1'].tabs.map(tab => tab.id)).toEqual(['same']);
+    expect(next.groups['2'].tabs).toEqual([]);
+    expect(next.tabToGroupMap.same).toBe('1');
+  });
 });
 
 // ── Reducer: REMOVE_TAB ──

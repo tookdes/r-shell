@@ -55,38 +55,65 @@ impl ConnectionManager {
 
     pub async fn create_connection(&self, connection_id: String, config: SshConfig) -> Result<()> {
         let mut client = SshClient::new();
-        let cancel_token = self.register_pending_connection(&connection_id).await;
+        let cancel_token = self
+            .register_pending_connection(&connection_id)
+            .await
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "A connection attempt for '{}' is already in progress",
+                    connection_id
+                )
+            })?;
 
         let connect_result = tokio::select! {
-            res = client.connect(&config) => res,
+            biased;
             _ = cancel_token.cancelled() => Err(anyhow::anyhow!("Connection cancelled by user")),
+            res = client.connect(&config) => res,
         };
 
-        self.clear_pending_connection(&connection_id).await;
+        // Final cancellation check and publication are serialized by the
+        // pending registry lock. A close racing a just-finished connect either
+        // cancels before publication or waits and then removes the published
+        // connection; it can never strand a session behind a closed tab.
+        let mut pending = self.pending_connections.write().await;
+        if cancel_token.is_cancelled() {
+            pending.remove(&connection_id);
+            return Err(anyhow::anyhow!("Connection cancelled by user"));
+        }
 
-        connect_result?;
-
-        let mut connections = self.connections.write().await;
-        connections.insert(connection_id, Arc::new(RwLock::new(client)));
-
-        Ok(())
+        match connect_result {
+            Ok(()) => {
+                let mut connections = self.connections.write().await;
+                connections.insert(connection_id.clone(), Arc::new(RwLock::new(client)));
+                pending.remove(&connection_id);
+                Ok(())
+            }
+            Err(error) => {
+                pending.remove(&connection_id);
+                Err(error)
+            }
+        }
     }
 
-    async fn register_pending_connection(&self, connection_id: &str) -> CancellationToken {
+    async fn register_pending_connection(&self, connection_id: &str) -> Option<CancellationToken> {
         let token = CancellationToken::new();
         let mut pending = self.pending_connections.write().await;
+        if pending.contains_key(connection_id) {
+            return None;
+        }
         pending.insert(connection_id.to_string(), token.clone());
-        token
+        Some(token)
     }
 
+    #[cfg(test)]
     async fn clear_pending_connection(&self, connection_id: &str) {
         let mut pending = self.pending_connections.write().await;
         pending.remove(connection_id);
     }
 
     pub async fn cancel_pending_connection(&self, connection_id: &str) -> bool {
-        let mut pending = self.pending_connections.write().await;
-        if let Some(token) = pending.remove(connection_id) {
+        let pending = self.pending_connections.read().await;
+        if let Some(token) = pending.get(connection_id) {
             token.cancel();
             true
         } else {
@@ -100,6 +127,10 @@ impl ConnectionManager {
     }
 
     pub async fn close_connection(&self, connection_id: &str) -> Result<()> {
+        // Closing a pending tab must cancel the in-flight dial as well as any
+        // already-published connection. Keeping this in the backend makes every
+        // frontend close path race-safe.
+        self.cancel_pending_connection(connection_id).await;
         self.abort_transfers(connection_id).await;
         // Tear down any interactive PTY first so reader tasks stop promptly.
         {
@@ -674,6 +705,23 @@ mod tests {
         let elapsed = start.elapsed();
         assert!(elapsed >= std::time::Duration::from_millis(1000));
         assert!(elapsed < std::time::Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn concurrent_connect_registrations_for_one_id_are_refused() {
+        let mgr = ConnectionManager::new();
+
+        assert!(mgr.register_pending_connection("conn-1").await.is_some());
+        assert!(mgr.register_pending_connection("conn-1").await.is_none());
+
+        // Cancellation marks the current attempt but deliberately keeps its
+        // registry slot until that attempt finishes, so an old cleanup cannot
+        // delete a newer retry's token.
+        assert!(mgr.cancel_pending_connection("conn-1").await);
+        assert!(mgr.register_pending_connection("conn-1").await.is_none());
+
+        mgr.clear_pending_connection("conn-1").await;
+        assert!(mgr.register_pending_connection("conn-1").await.is_some());
     }
 
     #[tokio::test]

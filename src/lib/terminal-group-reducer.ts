@@ -283,6 +283,9 @@ export function terminalGroupReducer(
       const { groupId, tab } = action;
       const group = state.groups[groupId];
       if (!group) return state;
+      if (Object.values(state.groups).some(g => g.tabs.some(existing => existing.id === tab.id))) {
+        return state;
+      }
       return {
         ...state,
         groups: {
