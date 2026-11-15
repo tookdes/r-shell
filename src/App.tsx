@@ -748,10 +748,10 @@ function AppContent() {
           await decryptConnectionSecrets(connectionDataRaw),
         );
       } catch (error) {
-        // On macOS an unsigned/identity-changing bundle can lose access to the
-        // Keychain item that protects saved credentials. Never let that turn a
-        // double-click into a silent rejected Promise: surface the failure and
-        // reopen the connection form with secret fields cleared.
+        // Keychain access can fail (for example after a macOS bundle/signing
+        // identity change). Never let that turn a double-click into a silent
+        // rejected Promise: surface the failure and reopen the connection form
+        // with secret fields cleared.
         console.error('[Connection] Failed to decrypt saved credentials:', error);
         const recoveryConfig = toConnectionConfig(connectionDataRaw);
         recoveryConfig.password = '';
