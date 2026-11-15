@@ -778,22 +778,29 @@ impl SshClient {
             // Create a channel for resize requests
             let (resize_tx, mut resize_rx) = mpsc::channel::<(u32, u32)>(16);
 
+            // One cancellation token owns the lifetime of both PTY worker
+            // tasks. Closing a tab must stop the SSH reader/writer even when
+            // the remote shell is completely idle.
+            let cancel = CancellationToken::new();
+
             // Spawn task to handle input (frontend → SSH)
-            // This is similar to ttyd's pty_write and INPUT command handling
-            // Key: immediate write + flush for responsiveness
+            let input_cancel = cancel.clone();
             tokio::spawn(async move {
                 let mut writer = input_channel;
-                while let Some(data) = input_rx.recv().await {
-                    // Write data immediately
-                    if let Err(e) = writer.write_all(&data).await {
-                        tracing::warn!("[PTY] Failed to send data to SSH: {}", e);
-                        break;
-                    }
-                    // Critical: flush immediately after write (like ttyd)
-                    // This ensures data is sent to PTY without buffering delay
-                    if let Err(e) = writer.flush().await {
-                        tracing::warn!("[PTY] Failed to flush data to SSH: {}", e);
-                        break;
+                loop {
+                    tokio::select! {
+                        _ = input_cancel.cancelled() => break,
+                        data = input_rx.recv() => {
+                            let Some(data) = data else { break };
+                            if let Err(e) = writer.write_all(&data).await {
+                                tracing::warn!("[PTY] Failed to send data to SSH: {}", e);
+                                break;
+                            }
+                            if let Err(e) = writer.flush().await {
+                                tracing::warn!("[PTY] Failed to flush data to SSH: {}", e);
+                                break;
+                            }
+                        }
                     }
                 }
             });
@@ -820,6 +827,7 @@ impl SshClient {
             // low-overhead PTY wakeup diagnostics. Counters stay local to this
             // task, so the hot path only performs integer increments.
             let diagnostic_connection_id = connection_id.to_string();
+            let output_cancel = cancel.clone();
             tokio::spawn(async move {
                 let mut pending_startup = startup_bytes;
                 let mut stats = PtyLoopStats::default();
@@ -839,6 +847,14 @@ impl SshClient {
 
                 loop {
                     tokio::select! {
+                        _ = output_cancel.cancelled() => {
+                            tracing::debug!(
+                                "[PTY] Worker cancellation received id={} gen={}",
+                                diagnostic_connection_id,
+                                generation,
+                            );
+                            break;
+                        }
                         msg = channel.wait() => {
                             match msg {
                                 Some(ChannelMsg::Data { data }) => {
@@ -924,6 +940,18 @@ impl SshClient {
                     }
                 }
 
+                // Best-effort bounded close so the remote shell is not left
+                // running after the local tab/session is torn down.
+                if tokio::time::timeout(Duration::from_secs(5), channel.close())
+                    .await
+                    .is_err()
+                {
+                    tracing::debug!(
+                        "[PTY] Channel close timed out id={} gen={}",
+                        diagnostic_connection_id,
+                        generation,
+                    );
+                }
                 log_pty_loop_stats(&diagnostic_connection_id, generation, &stats, true);
                 tracing::info!(
                     "[PTY-STATS] task exited id={} gen={}",
@@ -936,7 +964,7 @@ impl SshClient {
                 input_tx,
                 output_rx: Arc::new(tokio::sync::Mutex::new(output_rx)),
                 resize_tx,
-                cancel: CancellationToken::new(),
+                cancel,
             })
         } else {
             Err(anyhow::anyhow!("Not connected"))
